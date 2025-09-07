@@ -3,7 +3,7 @@ spring:
     name: SmsGatewayLLM
 
 server:
-  port: 5555
+  port: 8041
 app:
   values:
     api:
