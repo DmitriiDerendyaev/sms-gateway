@@ -1,0 +1,64 @@
+name: Build and Deploy SmsGatewayLLM to VPS
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      # Клонирование репозитория
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      # Установка JDK 17
+      - name: Set up JDK 17
+        uses: actions/setup-java@v3
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      # Сборка проекта
+      - name: Build with Maven
+        run: mvn clean package -DskipTests
+
+      # Проверка наличия JAR-файла
+      - name: List target directory
+        run: ls -la target/
+
+      # Деплой на VPS
+      - name: Deploy to VPS
+        env:
+          SSH_USER: homic
+          SSH_HOST: 91.146.28.240
+          SSH_PASSWORD: 360317wifi
+        run: |
+          sudo apt-get update && sudo apt-get install -y sshpass
+
+          # Проверка JAR
+          if [ ! -f target/SmsGatewayLLM-0.0.1-SNAPSHOT.jar ]; then
+            echo "Error: JAR file target/SmsGatewayLLM-0.0.1-SNAPSHOT.jar not found"
+            exit 1
+          fi
+
+          # Копируем артефакты на сервер
+          sshpass -p "$SSH_PASSWORD" scp -o StrictHostKeyChecking=no target/SmsGatewayLLM-0.0.1-SNAPSHOT.jar $SSH_USER@$SSH_HOST:/home/$SSH_USER/deploy/sms-gateway-llm/app.jar
+          sshpass -p "$SSH_PASSWORD" scp -o StrictHostKeyChecking=no Dockerfile $SSH_USER@$SSH_HOST:/home/$SSH_USER/deploy/sms-gateway-llm/Dockerfile
+
+          # Деплой контейнера
+          sshpass -p "$SSH_PASSWORD" ssh -o StrictHostKeyChecking=no $SSH_USER@$SSH_HOST << EOF
+            docker stop sms-gateway-llm || true
+            docker rm sms-gateway-llm || true
+            docker rmi sms-gateway-llm:latest || true
+            docker network create app-network || true
+
+            cd /home/$SSH_USER/deploy/sms-gateway-llm
+            ls -la # для отладки
+
+            docker build -t sms-gateway-llm:latest .
+            docker run -d --name sms-gateway-llm --network app-network -p 8084:8084 \
+              sms-gateway-llm:latest
+          EOF
