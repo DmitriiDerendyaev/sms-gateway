@@ -59,6 +59,6 @@ jobs:
             ls -la # для отладки
 
             docker build -t sms-gateway-llm:latest .
-            docker run -d --name sms-gateway-llm --network app-network -p 8084:8084 \
+            docker run -d --name sms-gateway-llm --network app-network -p 5555:5555 \
               sms-gateway-llm:latest
           EOF
