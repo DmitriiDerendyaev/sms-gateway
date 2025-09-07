@@ -1,0 +1,21 @@
+spring:
+  application:
+    name: SmsGatewayLLM
+
+server:
+  port: 8084
+app:
+  values:
+    api:
+      giga-chat:
+        base-url:
+          auth: "https://ngw.devices.sberbank.ru:9443"
+          chat: "https://gigachat.devices.sberbank.ru"
+        chat-settings:
+          scope: "GIGACHAT_API_PERS"
+        auth-key: "OGYwZTY3YTctMjllNi00NGM5LTg3ZGYtZmFkZTljODE5YjYwOjE1MzFhZGFjLTRkYzUtNGYwYS05ZDI1LTZiOWUwMzlkYzYzNw=="
+      sms-gateway:
+        base-url: "https://api.sms-gate.app/3rdparty/v1"
+        username: "QQMBCT"
+        password: "b0ettnzk5mdvhg"
+
