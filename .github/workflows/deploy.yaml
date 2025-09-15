@@ -64,8 +64,8 @@ jobs:
             docker rmi sms-gateway-llm:latest || true
             docker network create app-network || true
 
-            # Сборка образа с BuildKit
-            DOCKER_BUILDKIT=1 docker build -t sms-gateway-llm:latest .
+            docker build -t sms-gateway-llm:latest .
+
 
             # Запуск контейнера
             docker run -d --name sms-gateway-llm --network app-network -p 8041:8041 sms-gateway-llm:latest
