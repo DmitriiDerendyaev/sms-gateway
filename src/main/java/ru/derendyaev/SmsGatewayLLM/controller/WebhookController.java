@@ -2,6 +2,8 @@ package ru.derendyaev.SmsGatewayLLM.controller;
 
 
 import lombok.RequiredArgsConstructor;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -23,12 +25,23 @@ public class WebhookController {
     private final PromptBuilder promptBuilder;
 
     private static final String GIGA_CHAT_MODEL = "GigaChat";
+    private static final String TRUSTED_PHONE = "+79199192843";
+    private static final String LLM_PREFIX = "/llm";
 
     @PostMapping("/sms")
-    public void handleSmsWebhook(@RequestBody SmsWebhookRequest request) {
+    public ResponseEntity<Void> handleSmsWebhook(@RequestBody SmsWebhookRequest request) {
         // 1. Получаем сообщение пользователя
         String userMessage = request.getPayload().getMessage();
         String phoneNumber = request.getPayload().getPhoneNumber();
+
+        if (!TRUSTED_PHONE.equals(phoneNumber)) {
+            return ResponseEntity.status(HttpStatus.FORBIDDEN).build();
+        }
+
+        // Проверка префикса /llm
+        if (userMessage == null || !userMessage.trim().startsWith(LLM_PREFIX)) {
+            return ResponseEntity.status(HttpStatus.UNPROCESSABLE_ENTITY).build(); // 422
+        }
 
         // 2. Собираем промпт
         // Генерация тем через GigaChat
@@ -50,5 +63,7 @@ public class WebhookController {
 
         // 5. Отправляем обратно через SMS-клиент
         smsServiceClient.sendSms(phoneNumber, reply);
+
+        return ResponseEntity.status(HttpStatus.CREATED).build();
     }
 }
