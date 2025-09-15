@@ -1,6 +1,5 @@
 package ru.derendyaev.SmsGatewayLLM.controller;
 
-
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
@@ -15,6 +14,8 @@ import ru.derendyaev.SmsGatewayLLM.restUtils.GigaChatClient;
 import ru.derendyaev.SmsGatewayLLM.service.SmsService;
 import ru.derendyaev.SmsGatewayLLM.utils.PromptBuilder;
 
+import java.util.Set;
+
 @RestController
 @RequestMapping("/webhook")
 @RequiredArgsConstructor
@@ -25,17 +26,25 @@ public class WebhookController {
     private final PromptBuilder promptBuilder;
 
     private static final String GIGA_CHAT_MODEL = "GigaChat";
-    private static final String TRUSTED_PHONE = "+79199192843";
     private static final String LLM_PREFIX = "/llm";
+
+    // Список доверенных телефонов
+    private static final Set<String> TRUSTED_PHONES = Set.of(
+            "+79199192843",
+            "+79225164775",
+            "+79128720196",
+            "+79226925766",
+            "+79226851202"
+    );
 
     @PostMapping("/sms")
     public ResponseEntity<Void> handleSmsWebhook(@RequestBody SmsWebhookRequest request) {
-        // 1. Получаем сообщение пользователя
         String userMessage = request.getPayload().getMessage();
         String phoneNumber = request.getPayload().getPhoneNumber();
 
-        if (!TRUSTED_PHONE.equals(phoneNumber)) {
-            return ResponseEntity.status(HttpStatus.FORBIDDEN).build();
+        // Проверка доверенного номера
+        if (!TRUSTED_PHONES.contains(phoneNumber)) {
+            return ResponseEntity.status(HttpStatus.FORBIDDEN).build(); // 403
         }
 
         // Проверка префикса /llm
@@ -44,7 +53,6 @@ public class WebhookController {
         }
 
         // 2. Собираем промпт
-        // Генерация тем через GigaChat
         GigaMessageRequest gigaRequest = new GigaMessageRequest(
                 GIGA_CHAT_MODEL,
                 false,
@@ -64,6 +72,6 @@ public class WebhookController {
         // 5. Отправляем обратно через SMS-клиент
         smsServiceClient.sendSms(phoneNumber, reply);
 
-        return ResponseEntity.status(HttpStatus.CREATED).build();
+        return ResponseEntity.status(HttpStatus.CREATED).build(); // 201
     }
 }
