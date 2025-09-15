@@ -10,32 +10,33 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      # Клонирование репозитория
+      # 1. Клонирование репозитория
       - name: Checkout code
         uses: actions/checkout@v3
 
-      # Установка JDK 17
+      # 2. Установка JDK 17
       - name: Set up JDK 17
         uses: actions/setup-java@v3
         with:
           java-version: '17'
           distribution: 'temurin'
 
-      # Сборка проекта
+      # 3. Сборка проекта
       - name: Build with Maven
         run: mvn clean package -DskipTests
 
-      # Проверка наличия JAR-файла
+      # 4. Проверка наличия JAR-файла
       - name: List target directory
         run: ls -la target/
 
-      # Деплой на VPS
+      # 5. Деплой на VPS
       - name: Deploy to VPS
         env:
           SSH_USER: homic
           SSH_HOST: 91.146.28.240
           SSH_PASSWORD: 360317wifi
         run: |
+          # Установка sshpass и docker на VPS
           sudo apt-get update && sudo apt-get install -y sshpass
 
           # Проверка JAR
@@ -44,21 +45,28 @@ jobs:
             exit 1
           fi
 
-          # Копируем артефакты на сервер
-          sshpass -p "$SSH_PASSWORD" scp -o StrictHostKeyChecking=no target/SmsGatewayLLM-0.0.1-SNAPSHOT.jar $SSH_USER@$SSH_HOST:/home/$SSH_USER/deploy/sms-gateway-llm/app.jar
-          sshpass -p "$SSH_PASSWORD" scp -o StrictHostKeyChecking=no Dockerfile $SSH_USER@$SSH_HOST:/home/$SSH_USER/deploy/sms-gateway-llm/Dockerfile
+          # Копируем JAR и Dockerfile в чистую папку на VPS
+          sshpass -p "$SSH_PASSWORD" ssh -o StrictHostKeyChecking=no $SSH_USER@$SSH_HOST "mkdir -p /home/$SSH_USER/deploy/sms-gateway-llm/github-actions"
 
-          # Деплой контейнера
-          sshpass -p "$SSH_PASSWORD" ssh -o StrictHostKeyChecking=no $SSH_USER@$SSH_HOST << EOF
+          sshpass -p "$SSH_PASSWORD" scp -o StrictHostKeyChecking=no target/SmsGatewayLLM-0.0.1-SNAPSHOT.jar $SSH_USER@$SSH_HOST:/home/$SSH_USER/deploy/sms-gateway-llm/github-actions/app.jar
+          sshpass -p "$SSH_PASSWORD" scp -o StrictHostKeyChecking=no Dockerfile $SSH_USER@$SSH_HOST:/home/$SSH_USER/deploy/sms-gateway-llm/github-actions/Dockerfile
+
+          # Сборка и запуск контейнера
+          sshpass -p "$SSH_PASSWORD" ssh -o StrictHostKeyChecking=no $SSH_USER@$SSH_HOST << 'EOF'
+            set -e
+
+            cd /home/$USER/deploy/sms-gateway-llm/github-actions
+            ls -la  # проверка файлов
+
+            # Остановка старого контейнера
             docker stop sms-gateway-llm || true
             docker rm sms-gateway-llm || true
             docker rmi sms-gateway-llm:latest || true
             docker network create app-network || true
 
-            cd /home/$SSH_USER/deploy/sms-gateway-llm
-            ls -la # для отладки
+            # Сборка образа с BuildKit
+            DOCKER_BUILDKIT=1 docker build -t sms-gateway-llm:latest .
 
-            docker build -t sms-gateway-llm:latest .
-            docker run -d --name sms-gateway-llm --network app-network -p 8041:8041 \
-              sms-gateway-llm:latest
+            # Запуск контейнера
+            docker run -d --name sms-gateway-llm --network app-network -p 8041:8041 sms-gateway-llm:latest
           EOF
