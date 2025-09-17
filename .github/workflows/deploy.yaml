@@ -7,69 +7,59 @@ on:
 
 jobs:
   # =============================
-  # 1. СБОРКА
+  # 1. СБОРКА + ТЕСТЫ
   # =============================
-  build:
+  build-and-test:
     runs-on: ubuntu-latest
     steps:
       # Клонирование репозитория
       - name: Checkout code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       # Установка JDK 17
       - name: Set up JDK 17
-        uses: actions/setup-java@v3
+        uses: actions/setup-java@v4
         with:
           java-version: '17'
           distribution: 'temurin'
 
-      # Сборка проекта
-      - name: Build with Maven
-        run: mvn clean package -DskipTests
+      # Сборка проекта + тесты
+      - name: Build with Maven (with tests)
+        run: mvn clean package
 
       # Проверка наличия JAR-файла
       - name: List target directory
         run: ls -la target/
 
-  # =============================
-  # 2. ТЕСТИРОВАНИЕ
-  # =============================
-  test:
-    runs-on: ubuntu-latest
-    needs: build
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v3
-
-      - name: Set up JDK 17
-        uses: actions/setup-java@v3
+      # Сохранение артефакта для деплоя
+      - name: Upload JAR artifact
+        uses: actions/upload-artifact@v4
         with:
-          java-version: '17'
-          distribution: 'temurin'
-
-      # Запуск юнит-тестов
-      - name: Run unit tests
-        run: mvn test
+          name: app-jar
+          path: target/SmsGatewayLLM-0.0.1-SNAPSHOT.jar
+          retention-days: 1
 
   # =============================
-  # 3. ДЕПЛОЙ
+  # 2. ДЕПЛОЙ
   # =============================
   deploy:
     runs-on: ubuntu-latest
-    needs: [build, test]
+    needs: build-and-test
     steps:
+      # Подтянем репозиторий снова (для Dockerfile, конфигов и т.п.)
       - name: Checkout code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
-      - name: Set up JDK 17
-        uses: actions/setup-java@v3
+      # Загрузка артефакта
+      - name: Download JAR artifact
+        uses: actions/download-artifact@v4
         with:
-          java-version: '17'
-          distribution: 'temurin'
+          name: app-jar
+          path: ./deploy
 
-      # Сборка проекта (повторяем, так как артефакты не сохраняем)
-      - name: Build with Maven
-        run: mvn clean package -DskipTests
+      # Проверим, что JAR на месте
+      - name: List deploy dir
+        run: ls -la ./deploy
 
       - name: Deploy to VPS
         env:
@@ -79,19 +69,20 @@ jobs:
         run: |
           sudo apt-get update && sudo apt-get install -y sshpass
 
-          if [ ! -f target/SmsGatewayLLM-0.0.1-SNAPSHOT.jar ]; then
+          if [ ! -f ./deploy/SmsGatewayLLM-0.0.1-SNAPSHOT.jar ]; then
             echo "Error: JAR file not found"
             exit 1
           fi
 
           sshpass -p "$SSH_PASSWORD" ssh -o StrictHostKeyChecking=no $SSH_USER@$SSH_HOST "mkdir -p /home/$SSH_USER/deploy/sms-gateway-llm/github-actions"
 
-          sshpass -p "$SSH_PASSWORD" scp -o StrictHostKeyChecking=no target/SmsGatewayLLM-0.0.1-SNAPSHOT.jar $SSH_USER@$SSH_HOST:/home/$SSH_USER/deploy/sms-gateway-llm/github-actions/app.jar
+          # Копируем jar + Dockerfile (и можно добавить еще файлы по необходимости)
+          sshpass -p "$SSH_PASSWORD" scp -o StrictHostKeyChecking=no ./deploy/SmsGatewayLLM-0.0.1-SNAPSHOT.jar $SSH_USER@$SSH_HOST:/home/$SSH_USER/deploy/sms-gateway-llm/github-actions/app.jar
           sshpass -p "$SSH_PASSWORD" scp -o StrictHostKeyChecking=no Dockerfile $SSH_USER@$SSH_HOST:/home/$SSH_USER/deploy/sms-gateway-llm/github-actions/Dockerfile
 
           sshpass -p "$SSH_PASSWORD" ssh -o StrictHostKeyChecking=no $SSH_USER@$SSH_HOST << 'EOF'
             set -e
-            cd /home/$USER/deploy/sms-gateway-llm/github-actions
+            cd /home/homic/deploy/sms-gateway-llm/github-actions
             ls -la
 
             docker stop sms-gateway-llm || true
