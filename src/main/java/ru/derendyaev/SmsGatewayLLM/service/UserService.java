@@ -24,6 +24,15 @@ public class UserService {
         return userRepository.findByTelegramId(telegramId);
     }
 
+    public Optional<UserEntity> getByPhoneNumber(String phoneNumber) {
+        return userRepository.findByPhoneNumber(phoneNumber);
+    }
+
+    @Transactional
+    public UserEntity saveUser(UserEntity user) {
+        return userRepository.save(user);
+    }
+
     public boolean hasTokens(String phoneNumber) {
         return userRepository.findByPhoneNumber(phoneNumber)
                 .map(u -> u.getTokens() > 0)
