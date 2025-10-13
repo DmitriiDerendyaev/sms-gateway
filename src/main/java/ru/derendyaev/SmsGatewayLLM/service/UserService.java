@@ -18,6 +18,8 @@ public class UserService {
     private final UserRepository userRepository;
     private final PromoCodeRepository promoCodeRepository;
 
+    // ===================== Пользователи =====================
+
     public Optional<UserEntity> getByTelegramId(Long telegramId) {
         return userRepository.findByTelegramId(telegramId);
     }
@@ -28,6 +30,18 @@ public class UserService {
                 .orElse(false);
     }
 
+    // ===================== Промокоды =====================
+
+    /**
+     * Проверяет, существует ли промокод и не активирован ли он.
+     */
+    public boolean checkPromoExists(String code) {
+        return promoCodeRepository.findByCodeAndIsUsedFalse(code).isPresent();
+    }
+
+    /**
+     * Генерация указанного количества промокодов с заданным количеством токенов.
+     */
     @Transactional
     public String generatePromoCodes(int count, int tokenAmount) {
         StringBuilder codes = new StringBuilder();
@@ -42,6 +56,9 @@ public class UserService {
         return codes.toString();
     }
 
+    /**
+     * Активация промокода (старый вариант без телефона).
+     */
     @Transactional
     public String activatePromo(Long telegramId, String code) {
         PromoCodeEntity promo = promoCodeRepository.findByCode(code)
@@ -63,5 +80,41 @@ public class UserService {
         promoCodeRepository.save(promo);
 
         return "✅ Промокод активирован! Вам начислено " + promo.getTokenAmount() + " токенов.";
+    }
+
+    /**
+     * Активация промокода с указанием номера телефона.
+     */
+    @Transactional
+    public String activatePromoWithPhone(Long telegramId, String username, String code, String phoneNumber) {
+        Optional<PromoCodeEntity> promoOpt = promoCodeRepository.findByCodeAndIsUsedFalse(code);
+        if (promoOpt.isEmpty()) {
+            return "❌ Промокод не найден или уже активирован.";
+        }
+
+        PromoCodeEntity promo = promoOpt.get();
+
+        // Проверяем, есть ли пользователь
+        UserEntity user = userRepository.findByTelegramId(telegramId)
+                .orElseGet(() -> userRepository.save(UserEntity.builder()
+                        .telegramId(telegramId)
+                        .username(username)
+                        .phoneNumber(phoneNumber)
+                        .tokens(0)
+                        .build()));
+
+        // Обновляем данные
+        user.setPhoneNumber(phoneNumber);
+        user.setUsername(username);
+        user.setTokens(user.getTokens() + promo.getTokenAmount());
+        userRepository.save(user);
+
+        // Помечаем промокод использованным
+        promo.setIsUsed(true);
+        promo.setUsedBy(telegramId);
+        promoCodeRepository.save(promo);
+
+        return "✅ Промокод успешно активирован!\n📱 Телефон: " + phoneNumber +
+                "\n💰 Начислено токенов: " + promo.getTokenAmount();
     }
 }

@@ -7,4 +7,6 @@ import java.util.Optional;
 
 public interface PromoCodeRepository extends JpaRepository<PromoCodeEntity, Long> {
     Optional<PromoCodeEntity> findByCode(String code);
+    Optional<PromoCodeEntity> findByCodeAndIsUsedFalse(String code);
+
 }

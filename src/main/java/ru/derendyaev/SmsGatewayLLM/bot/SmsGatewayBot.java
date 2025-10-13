@@ -21,8 +21,8 @@ import java.util.concurrent.ConcurrentHashMap;
 public class SmsGatewayBot extends TelegramLongPollingBot {
 
     private final UserService userService;
-
     private final Map<Long, String> userState = new ConcurrentHashMap<>();
+    private final Map<Long, String> pendingPromo = new ConcurrentHashMap<>();
 
     @Value("${app.values.bot.username}")
     private String botUsername;
@@ -34,37 +34,84 @@ public class SmsGatewayBot extends TelegramLongPollingBot {
     public void register() throws Exception {
         TelegramBotsApi api = new TelegramBotsApi(DefaultBotSession.class);
         api.registerBot(this);
+        log.info("✅ Telegram Bot '{}' успешно запущен", botUsername);
     }
 
     @Override
     public void onUpdateReceived(Update update) {
-        if (update.hasMessage() && update.getMessage().hasText()) {
-            String message = update.getMessage().getText();
-            Long chatId = update.getMessage().getChatId();
+        if (!update.hasMessage() || !update.getMessage().hasText()) return;
 
-            if (message.startsWith("/gen")) {
-                String[] parts = message.split(" ");
-                int count = Integer.parseInt(parts[1]);
-                int tokens = Integer.parseInt(parts[2]);
-                String codes = userService.generatePromoCodes(count, tokens);
-                sendMessage(chatId, "🎟️ Сгенерировано промокодов:\n" + codes);
-                return;
-            }
+        String message = update.getMessage().getText().trim();
+        Long chatId = update.getMessage().getChatId();
+        String username = update.getMessage().getFrom().getUserName();
 
-            if (message.startsWith("/promo")) {
-                String[] parts = message.split(" ");
-                if (parts.length < 2) {
-                    sendMessage(chatId, "Введите промокод: /promo ABCD1234");
-                    return;
-                }
-                String code = parts[1];
-                String result = userService.activatePromo(chatId, code);
+        // Проверка состояний пользователя
+        if (userState.containsKey(chatId)) {
+            String state = userState.get(chatId);
+
+            if (state.equals("WAITING_PHONE")) {
+                String phone = message;
+                String promo = pendingPromo.remove(chatId);
+                String result = userService.activatePromoWithPhone(chatId, username, promo, phone);
                 sendMessage(chatId, result);
+                userState.remove(chatId);
+                return;
+            }
+        }
+
+        // Команда /start
+        if (message.equals("/start")) {
+            String welcome = """
+                    👋 Привет! Добро пожаловать в SMS-Gateway!
+
+                    🔑 Чтобы активировать доступ, получи промокод у администратора:
+                    👉 [@dmitrii_derendyaev](https://t.me/dmitrii_derendyaev)
+
+                    🌐 Больше информации: [sms-gateway.derendyaev.ru](https://sms-gateway.derendyaev.ru)
+
+                    После этого используй команду:
+                    `/promo <твой_код>`
+                    """;
+            sendMessage(chatId, welcome);
+            return;
+        }
+
+        // Команда /promo
+        if (message.startsWith("/promo")) {
+            String[] parts = message.split(" ");
+            if (parts.length < 2) {
+                sendMessage(chatId, "Введите промокод в формате: /promo ABCD1234");
                 return;
             }
 
-            sendMessage(chatId, "Привет! Используй /promo <код> для активации токенов.");
+            String promoCode = parts[1];
+            boolean valid = userService.checkPromoExists(promoCode);
+            if (!valid) {
+                sendMessage(chatId, "❌ Промокод не найден или уже использован.");
+                return;
+            }
+
+            pendingPromo.put(chatId, promoCode);
+            userState.put(chatId, "WAITING_PHONE");
+            sendMessage(chatId, "📱 Введите номер телефона, который будет закреплён за вашим аккаунтом:");
+            return;
         }
+
+        // Команда /gen (генерация промокодов)
+        if (message.startsWith("/gen")) {
+            String[] parts = message.split(" ");
+            if (parts.length < 3) {
+                sendMessage(chatId, "Использование: /gen <количество> <токены>");
+                return;
+            }
+            int count = Integer.parseInt(parts[1]);
+            int tokens = Integer.parseInt(parts[2]);
+            String codes = userService.generatePromoCodes(count, tokens);
+            sendMessage(chatId, "🎟️ Сгенерировано промокодов:\n" + codes);
+            return;
+        }
+
+        sendMessage(chatId, "🤖 Неизвестная команда. Используй /start или /promo <код>");
     }
 
     private void sendMessage(Long chatId, String text) {
@@ -72,6 +119,8 @@ public class SmsGatewayBot extends TelegramLongPollingBot {
             execute(SendMessage.builder()
                     .chatId(chatId.toString())
                     .text(text)
+                    .parseMode("Markdown")
+                    .disableWebPagePreview(true)
                     .build());
         } catch (Exception e) {
             log.error("Ошибка при отправке сообщения пользователю {}: {}", chatId, e.getMessage());
