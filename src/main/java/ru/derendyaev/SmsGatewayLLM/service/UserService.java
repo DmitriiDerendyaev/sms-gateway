@@ -115,35 +115,37 @@ public class UserService {
      * Активация промокода с указанием номера телефона.
      */
     @Transactional
-    public String activatePromoWithPhone(Long telegramId, String username, String code, String phoneNumber) {
-        Optional<PromoCodeEntity> promoOpt = promoCodeRepository.findByCodeAndIsUsedFalse(code);
-        if (promoOpt.isEmpty()) {
-            return "❌ Промокод не найден или уже активирован.";
+    public String activatePromoWithPhone(Long telegramId, String username, String promoCode, String rawPhone) {
+        String phone = normalizePhoneNumber(rawPhone);
+        if (phone == null) {
+            return "❌ Некорректный номер телефона.";
         }
 
-        PromoCodeEntity promo = promoOpt.get();
+        Optional<UserEntity> existingUser = userRepository.findByPhoneNumber(phone);
+        if (existingUser.isPresent()) {
+            return "❌ Этот номер уже зарегистрирован.";
+        }
 
-        // Проверяем, есть ли пользователь
-        UserEntity user = userRepository.findByTelegramId(telegramId)
-                .orElseGet(() -> userRepository.save(UserEntity.builder()
-                        .telegramId(telegramId)
-                        .username(username)
-                        .phoneNumber(normalizePhoneNumber(phoneNumber))
-                        .tokens(0)
-                        .build()));
+        // Проверка промокода
+        Optional<PromoCodeEntity> promo = promoCodeRepository.findByCode(promoCode);
+        if (promo.isEmpty() || promo.get().getIsUsed()) {
+            return "❌ Промокод не найден или уже использован.";
+        }
 
-        // Обновляем данные
-        user.setPhoneNumber(phoneNumber);
+        // Сохраняем нового пользователя
+        UserEntity user = new UserEntity();
+        user.setTelegramId(telegramId);
         user.setUsername(username);
-        user.setTokens(user.getTokens() + promo.getTokenAmount());
+        user.setPhoneNumber(phone); // здесь уже нормализованный
+        user.setTokens(promo.get().getTokenAmount());
         userRepository.save(user);
 
-        // Помечаем промокод использованным
-        promo.setIsUsed(true);
-        promo.setUsedBy(telegramId);
-        promoCodeRepository.save(promo);
+        // Отмечаем промокод как использованный
+        PromoCodeEntity promoEntity = promo.get();
+        promoEntity.setIsUsed(true);
+        promoCodeRepository.save(promoEntity);
 
-        return "✅ Промокод успешно активирован!\n📱 Телефон: " + phoneNumber +
-                "\n💰 Начислено токенов: " + promo.getTokenAmount();
+        return "✅ Промокод успешно активирован! Ваш номер: " + phone + ", токены: " + promoEntity.getTokenAmount();
     }
+
 }

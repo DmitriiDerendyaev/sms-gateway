@@ -16,7 +16,6 @@ import ru.derendyaev.SmsGatewayLLM.utils.PromptBuilder;
 
 import java.util.Optional;
 
-
 @Slf4j
 @RestController
 @RequestMapping("/webhook")
@@ -24,7 +23,7 @@ import java.util.Optional;
 public class WebhookController {
 
     private final GigaChatClient gigaChatClient;
-    private final SmsService smsServiceClient;
+    private final SmsService smsService;
     private final PromptBuilder promptBuilder;
     private final UserService userService;
 
@@ -51,19 +50,19 @@ public class WebhookController {
         }
 
         // ------------------- Проверка пользователя -------------------
-        Optional varUser = userService.getByPhoneNumber(phoneNumber);
+        Optional<UserEntity> varUser = userService.getByPhoneNumber(phoneNumber);
         if (varUser.isEmpty()) {
-            smsServiceClient.sendSms(rawPhoneNumber,
+            smsService.sendSms(rawPhoneNumber,
                     "❌ Ваш номер не зарегистрирован. Получите промокод у администратора: " + ADMIN_CONTACT +
                             "\nДля дополнительной информации: https://sms-gateway.derendyaev.ru/");
             return ResponseEntity.status(HttpStatus.FORBIDDEN).build();
         }
 
-        UserEntity user = (UserEntity) varUser.get();
+        UserEntity user = varUser.get();
 
         // ------------------- Проверка токенов -------------------
         if (user.getTokens() <= 0) {
-            smsServiceClient.sendSms(rawPhoneNumber,
+            smsService.sendSms(rawPhoneNumber,
                     "⚠️ Недостаточно токенов. Пополните баланс на: https://sms-gateway.derendyaev.ru/\n" +
                             "Связаться с администратором: " + ADMIN_CONTACT);
             return ResponseEntity.status(HttpStatus.PAYMENT_REQUIRED).build();
@@ -82,12 +81,11 @@ public class WebhookController {
                     1.0
             );
 
-            // блокируем вызов, чтобы получить ответ один раз
             gigaResponse = gigaChatClient.gigaMessageGenerate(gigaRequest);
 
         } catch (Exception e) {
             log.error("Ошибка при генерации ответа для {}: {}", phoneNumber, e.getMessage());
-            smsServiceClient.sendSms(rawPhoneNumber,
+            smsService.sendSms(rawPhoneNumber,
                     "❌ Ошибка при обработке запроса LLM. Свяжитесь с администратором: " + ADMIN_CONTACT);
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).build();
         }
@@ -99,7 +97,7 @@ public class WebhookController {
         userService.saveUser(user);
 
         // ------------------- Отправка SMS -------------------
-        smsServiceClient.sendSms(rawPhoneNumber,
+        smsService.sendSms(rawPhoneNumber,
                 gigaResponse.toString() +
                         "\n\n💰 Потрачено токенов: " + tokensUsed +
                         "\n📊 Остаток токенов: " + remainingTokens +
