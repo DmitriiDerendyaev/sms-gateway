@@ -1,6 +1,7 @@
 package ru.derendyaev.SmsGatewayLLM.controller;
 
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
@@ -12,6 +13,7 @@ import ru.derendyaev.SmsGatewayLLM.service.SmsService;
 import ru.derendyaev.SmsGatewayLLM.service.UserService;
 import ru.derendyaev.SmsGatewayLLM.utils.PromptBuilder;
 
+@Slf4j
 @RestController
 @RequestMapping("/webhook")
 @RequiredArgsConstructor
@@ -24,18 +26,30 @@ public class WebhookController {
 
     private static final String GIGA_CHAT_MODEL = "GigaChat";
     private static final String LLM_PREFIX = "/llm";
-
     private static final String ADMIN_CONTACT = "https://t.me/dmitrii_derendyaev";
 
     @PostMapping("/sms")
     public ResponseEntity<Void> handleSmsWebhook(@RequestBody SmsWebhookRequest request) {
         String userMessage = request.getPayload().getMessage();
-        String phoneNumber = request.getPayload().getPhoneNumber();
+        String rawPhoneNumber = request.getPayload().getPhoneNumber();
+
+        // ------------------- Нормализация номера -------------------
+        String phoneNumber = userService.normalizePhoneNumber(rawPhoneNumber);
+        if (phoneNumber == null) {
+            log.info("❌ Некорректный номер телефона: {}", rawPhoneNumber);
+            return ResponseEntity.status(HttpStatus.BAD_REQUEST).build();
+        }
+
+        // ------------------- Проверка префикса /llm -------------------
+        if (userMessage == null || !userMessage.trim().startsWith(LLM_PREFIX)) {
+            log.info("❌ Сообщение не начинается с /llm, phone={}", phoneNumber);
+            return ResponseEntity.status(HttpStatus.UNPROCESSABLE_ENTITY).build();
+        }
 
         // ------------------- Проверка пользователя -------------------
         var userOpt = userService.getByPhoneNumber(phoneNumber);
         if (userOpt.isEmpty()) {
-            smsServiceClient.sendSms(phoneNumber,
+            smsServiceClient.sendSms(rawPhoneNumber,
                     "❌ Ваш номер не зарегистрирован. Получите промокод у администратора: " + ADMIN_CONTACT +
                             "\nДля дополнительной информации: https://sms-gateway.derendyaev.ru/");
             return ResponseEntity.status(HttpStatus.FORBIDDEN).build();
@@ -45,51 +59,47 @@ public class WebhookController {
 
         // ------------------- Проверка токенов -------------------
         if (user.getTokens() <= 0) {
-            smsServiceClient.sendSms(phoneNumber,
+            smsServiceClient.sendSms(rawPhoneNumber,
                     "⚠️ Недостаточно токенов. Пополните баланс на: https://sms-gateway.derendyaev.ru/\n" +
                             "Связаться с администратором: " + ADMIN_CONTACT);
             return ResponseEntity.status(HttpStatus.PAYMENT_REQUIRED).build();
         }
 
-        // ------------------- Проверка префикса /llm -------------------
-        if (userMessage == null || !userMessage.trim().startsWith(LLM_PREFIX)) {
-            smsServiceClient.sendSms(phoneNumber, "❌ Сообщение должно начинаться с /llm");
-            return ResponseEntity.status(HttpStatus.UNPROCESSABLE_ENTITY).build();
-        }
-
         // ------------------- Генерация ответа LLM -------------------
-        GigaMessageRequest gigaRequest = new GigaMessageRequest(
-                GIGA_CHAT_MODEL,
-                false,
-                0,
-                promptBuilder.buildMessages(userMessage),
-                1,
-                1024,
-                1.0
-        );
-
         GigaMessageResponse gigaResponse;
         try {
-            gigaResponse = gigaChatClient.gigaMessageGenerate(gigaRequest);
+            synchronized (user) { // блокируем по пользователю, чтобы не было дублирования
+                GigaMessageRequest gigaRequest = new GigaMessageRequest(
+                        GIGA_CHAT_MODEL,
+                        false,
+                        0,
+                        promptBuilder.buildMessages(userMessage),
+                        1,
+                        1024,
+                        1.0
+                );
+
+                gigaResponse = gigaChatClient.gigaMessageGenerate(gigaRequest);
+
+                // ------------------- Вычитаем токены -------------------
+                int tokensUsed = gigaResponse.getUsage() != null ? gigaResponse.getUsage().getTotalTokens() : 1;
+                int remainingTokens = Math.max(user.getTokens() - tokensUsed, 0);
+                user.setTokens(remainingTokens);
+                userService.saveUser(user);
+
+                // ------------------- Отправка SMS -------------------
+                smsServiceClient.sendSms(rawPhoneNumber,
+                        gigaResponse.toString() +
+                                "\n\n💰 Потрачено токенов: " + tokensUsed +
+                                "\n📊 Остаток токенов: " + remainingTokens +
+                                "\nСвязаться с администратором: " + ADMIN_CONTACT);
+            }
         } catch (Exception e) {
-            smsServiceClient.sendSms(phoneNumber,
+            log.error("Ошибка при генерации ответа для {}: {}", phoneNumber, e.getMessage());
+            smsServiceClient.sendSms(rawPhoneNumber,
                     "❌ Ошибка при обработке запроса LLM. Свяжитесь с администратором: " + ADMIN_CONTACT);
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).build();
         }
-
-        String reply = gigaResponse.toString();
-
-        // ------------------- Вычитаем токены -------------------
-        int tokensUsed = gigaResponse.getUsage() != null ? gigaResponse.getUsage().getTotalTokens() : 1;
-        int remainingTokens = Math.max(user.getTokens() - tokensUsed, 0);
-        user.setTokens(remainingTokens);
-        userService.saveUser(user);
-
-        // ------------------- Отправка SMS -------------------
-        smsServiceClient.sendSms(phoneNumber,
-                reply + "\n\n💰 Потрачено токенов: " + tokensUsed +
-                        "\n📊 Остаток токенов: " + remainingTokens +
-                        "\nСвязаться с администратором: " + ADMIN_CONTACT);
 
         return ResponseEntity.status(HttpStatus.CREATED).build();
     }

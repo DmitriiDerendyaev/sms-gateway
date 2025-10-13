@@ -24,20 +24,40 @@ public class UserService {
         return userRepository.findByTelegramId(telegramId);
     }
 
-    public Optional<UserEntity> getByPhoneNumber(String phoneNumber) {
-        return userRepository.findByPhoneNumber(phoneNumber);
+    public Optional<UserEntity> getByPhoneNumber(String rawPhone) {
+        String phone = normalizePhoneNumber(rawPhone);
+        if (phone == null) return Optional.empty();
+        return userRepository.findByPhoneNumber(phone);
     }
 
     @Transactional
     public UserEntity saveUser(UserEntity user) {
+        if (user.getPhoneNumber() != null) {
+            user.setPhoneNumber(normalizePhoneNumber(user.getPhoneNumber()));
+        }
         return userRepository.save(user);
     }
+
 
     public boolean hasTokens(String phoneNumber) {
         return userRepository.findByPhoneNumber(phoneNumber)
                 .map(u -> u.getTokens() > 0)
                 .orElse(false);
     }
+
+    public String normalizePhoneNumber(String rawPhone) {
+        if (rawPhone == null) return null;
+
+        // Оставляем только цифры
+        String digits = rawPhone.replaceAll("\\D", "");
+
+        // Проверяем, что длина >= 10
+        if (digits.length() < 10) return null;
+
+        // Берем последние 10 цифр
+        return digits.substring(digits.length() - 10);
+    }
+
 
     // ===================== Промокоды =====================
 
