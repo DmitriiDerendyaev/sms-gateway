@@ -128,7 +128,7 @@ public class UserService {
                 .orElseGet(() -> userRepository.save(UserEntity.builder()
                         .telegramId(telegramId)
                         .username(username)
-                        .phoneNumber(phoneNumber)
+                        .phoneNumber(normalizePhoneNumber(phoneNumber))
                         .tokens(0)
                         .build()));
 
