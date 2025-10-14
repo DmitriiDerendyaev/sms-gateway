@@ -121,31 +121,65 @@ public class UserService {
             return "❌ Некорректный номер телефона.";
         }
 
-        Optional<UserEntity> existingUser = userRepository.findByPhoneNumber(phone);
-        if (existingUser.isPresent()) {
-            return "❌ Этот номер уже зарегистрирован.";
-        }
-
-        // Проверка промокода
-        Optional<PromoCodeEntity> promo = promoCodeRepository.findByCode(promoCode);
-        if (promo.isEmpty() || promo.get().getIsUsed()) {
+        // Проверяем наличие промокода
+        Optional<PromoCodeEntity> promoOpt = promoCodeRepository.findByCode(promoCode);
+        if (promoOpt.isEmpty() || promoOpt.get().getIsUsed()) {
             return "❌ Промокод не найден или уже использован.";
         }
+        PromoCodeEntity promo = promoOpt.get();
 
-        // Сохраняем нового пользователя
-        UserEntity user = new UserEntity();
-        user.setTelegramId(telegramId);
-        user.setUsername(username);
-        user.setPhoneNumber(phone); // здесь уже нормализованный
-        user.setTokens(promo.get().getTokenAmount());
-        userRepository.save(user);
+        // Ищем пользователя по Telegram ID
+        Optional<UserEntity> userOpt = userRepository.findByTelegramId(telegramId);
 
-        // Отмечаем промокод как использованный
-        PromoCodeEntity promoEntity = promo.get();
-        promoEntity.setIsUsed(true);
-        promoCodeRepository.save(promoEntity);
+        if (userOpt.isEmpty()) {
+            // Пользователь впервые активирует промокод — создаём нового
+            UserEntity newUser = new UserEntity();
+            newUser.setTelegramId(telegramId);
+            newUser.setUsername(username);
+            newUser.setPhoneNumber(phone);
+            newUser.setTokens(promo.getTokenAmount());
+            userRepository.save(newUser);
 
-        return "✅ Промокод успешно активирован! Ваш номер: " + phone + ", токены: " + promoEntity.getTokenAmount();
+            promo.setIsUsed(true);
+            promoCodeRepository.save(promo);
+
+            return "✅ Промокод активирован впервые! Телефон сохранён: +" + phone +
+                    "\n💰 Начислено " + promo.getTokenAmount() + " токенов.";
+        }
+
+        // Если пользователь уже существует
+        UserEntity user = userOpt.get();
+
+        // Проверяем, совпадает ли телефон
+        if (phone.equals(user.getPhoneNumber())) {
+            // Телефон совпадает — просто начисляем токены
+            user.setTokens(user.getTokens() + promo.getTokenAmount());
+            userRepository.save(user);
+
+            promo.setIsUsed(true);
+            promoCodeRepository.save(promo);
+
+            return "🎉 Промокод активирован повторно!\n💰 Начислено " + promo.getTokenAmount() +
+                    " токенов. Текущий баланс: " + user.getTokens();
+        }
+
+        // Если телефон отличается, проверяем, есть ли этот телефон в БД
+        Optional<UserEntity> phoneOwnerOpt = userRepository.findByPhoneNumber(phone);
+        if (phoneOwnerOpt.isPresent()) {
+            // Телефон принадлежит другому пользователю — начисляем токены ему
+            UserEntity phoneOwner = phoneOwnerOpt.get();
+            phoneOwner.setTokens(phoneOwner.getTokens() + promo.getTokenAmount());
+            userRepository.save(phoneOwner);
+
+            promo.setIsUsed(true);
+            promoCodeRepository.save(promo);
+
+            return "📲 Промокод активирован для пользователя с номером +" + phone +
+                    "\n💰 Начислено " + promo.getTokenAmount() + " токенов.";
+        }
+
+        // Телефона нет в базе — ошибка
+        return "❌ Указанный номер не найден среди зарегистрированных пользователей.";
     }
 
 }
