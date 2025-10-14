@@ -141,6 +141,7 @@ public class UserService {
             userRepository.save(newUser);
 
             promo.setIsUsed(true);
+            promo.setUsedBy(telegramId);
             promoCodeRepository.save(promo);
 
             return "✅ Промокод активирован впервые! Телефон сохранён: +" + phone +
