@@ -26,6 +26,7 @@ app:
           chat: "https://gigachat.devices.sberbank.ru"
         chat-settings:
           scope: "GIGACHAT_API_PERS"
+          max-tokens: 512
         auth-key: "OGYwZTY3YTctMjllNi00NGM5LTg3ZGYtZmFkZTljODE5YjYwOjE1MzFhZGFjLTRkYzUtNGYwYS05ZDI1LTZiOWUwMzlkYzYzNw=="
       sms-gateway:
         base-url: "https://api.sms-gate.app/3rdparty/v1"

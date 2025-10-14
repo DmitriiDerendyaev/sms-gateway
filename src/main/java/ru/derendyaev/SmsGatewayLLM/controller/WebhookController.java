@@ -2,6 +2,7 @@ package ru.derendyaev.SmsGatewayLLM.controller;
 
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
@@ -10,12 +11,12 @@ import ru.derendyaev.SmsGatewayLLM.gigaChat.models.message.GigaMessageRequest;
 import ru.derendyaev.SmsGatewayLLM.gigaChat.models.message.GigaMessageResponse;
 import ru.derendyaev.SmsGatewayLLM.model.UserEntity;
 import ru.derendyaev.SmsGatewayLLM.restUtils.GigaChatClient;
+import ru.derendyaev.SmsGatewayLLM.service.MessageDeduplicationService;
 import ru.derendyaev.SmsGatewayLLM.service.SmsService;
 import ru.derendyaev.SmsGatewayLLM.service.UserService;
 import ru.derendyaev.SmsGatewayLLM.utils.PromptBuilder;
 
 import java.util.Optional;
-
 @Slf4j
 @RestController
 @RequestMapping("/webhook")
@@ -26,6 +27,10 @@ public class WebhookController {
     private final SmsService smsService;
     private final PromptBuilder promptBuilder;
     private final UserService userService;
+    private final MessageDeduplicationService deduplicationService;
+
+    @Value("${app.values.api.giga-chat.chat-settings.max-tokens:512}")
+    private int defaultMaxTokens;
 
     private static final String GIGA_CHAT_MODEL = "GigaChat";
     private static final String LLM_PREFIX = "/llm";
@@ -35,6 +40,7 @@ public class WebhookController {
     public ResponseEntity<Void> handleSmsWebhook(@RequestBody SmsWebhookRequest request) {
         String userMessage = request.getPayload().getMessage();
         String rawPhoneNumber = request.getPayload().getPhoneNumber();
+        String externalMessageId = request.getPayload().getMessageId(); // если есть
 
         // ------------------- Нормализация номера -------------------
         String phoneNumber = userService.normalizePhoneNumber(rawPhoneNumber);
@@ -42,6 +48,13 @@ public class WebhookController {
             log.info("Некорректный номер: {}", rawPhoneNumber);
             return ResponseEntity.status(HttpStatus.BAD_REQUEST).build();
         }
+
+        // ------------------- Антидублирование -------------------
+        if (deduplicationService.isDuplicate(userMessage, phoneNumber, externalMessageId)) {
+            log.warn("❗ Дубликат сообщения от {}: {}", phoneNumber, userMessage);
+            return ResponseEntity.status(HttpStatus.CONFLICT).build(); // 409 Conflict
+        }
+        deduplicationService.registerMessage(userMessage, phoneNumber, externalMessageId);
 
         // ------------------- Проверка префикса /llm -------------------
         if (userMessage == null || !userMessage.trim().startsWith(LLM_PREFIX)) {
@@ -59,14 +72,19 @@ public class WebhookController {
         }
 
         UserEntity user = varUser.get();
+        int userTokens = user.getTokens();
 
         // ------------------- Проверка токенов -------------------
-        if (user.getTokens() <= 0) {
+        if (userTokens <= 0) {
             smsService.sendSms(rawPhoneNumber,
                     "⚠️ Недостаточно токенов. Пополните баланс на: https://sms-gateway.derendyaev.ru/\n" +
                             "Связаться с администратором: " + ADMIN_CONTACT);
             return ResponseEntity.status(HttpStatus.PAYMENT_REQUIRED).build();
         }
+
+        // ------------------- Определение maxTokens для запроса -------------------
+        int tokensForRequest = Math.min(defaultMaxTokens, userTokens);
+        log.info("Пользователь {} имеет {} токенов, используем maxTokens={}", phoneNumber, userTokens, tokensForRequest);
 
         // ------------------- Генерация ответа LLM -------------------
         GigaMessageResponse gigaResponse;
@@ -77,14 +95,14 @@ public class WebhookController {
                     0,
                     promptBuilder.buildMessages(userMessage),
                     1,
-                    1024,
+                    tokensForRequest,
                     1.0
             );
 
             gigaResponse = gigaChatClient.gigaMessageGenerate(gigaRequest);
 
         } catch (Exception e) {
-            log.error("Ошибка при генерации ответа для {}: {}", phoneNumber, e.getMessage());
+            log.error("Ошибка при генерации ответа для {}: {}", phoneNumber, e.getMessage(), e);
             smsService.sendSms(rawPhoneNumber,
                     "❌ Ошибка при обработке запроса LLM. Свяжитесь с администратором: " + ADMIN_CONTACT);
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).build();
@@ -92,7 +110,7 @@ public class WebhookController {
 
         // ------------------- Вычитаем токены -------------------
         int tokensUsed = gigaResponse.getUsage() != null ? gigaResponse.getUsage().getTotalTokens() : 1;
-        int remainingTokens = Math.max(user.getTokens() - tokensUsed, 0);
+        int remainingTokens = Math.max(userTokens - tokensUsed, 0);
         user.setTokens(remainingTokens);
         userService.saveUser(user);
 
@@ -103,6 +121,7 @@ public class WebhookController {
                         "\n📊 Остаток токенов: " + remainingTokens +
                         "\nСвязаться с администратором: " + ADMIN_CONTACT);
 
+        log.info("✅ Обработано сообщение от {}. Потрачено токенов: {}, осталось: {}", phoneNumber, tokensUsed, remainingTokens);
         return ResponseEntity.status(HttpStatus.CREATED).build();
     }
 }

@@ -11,6 +11,7 @@ import org.springframework.web.reactive.function.client.WebClientResponseExcepti
 import ru.derendyaev.SmsGatewayLLM.smsgateway.dto.*;
 
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
 import java.util.Base64;
 import java.util.Collections;
 import java.util.List;
@@ -52,7 +53,8 @@ public class SmsGatewayClient {
                     .retrieve()
                     .bodyToMono(MessageResponse.class)
                     .log()
-                    .block();
+                    .doOnError(e -> log.error("Ошибка отправки SMS", e))
+                    .block(Duration.ofSeconds(5)); // без retry
         } catch (WebClientResponseException e) {
             log.error("Ошибка при отправке SMS: {} - {}", e.getStatusCode(), e.getResponseBodyAsString());
             throw e;
