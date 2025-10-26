@@ -1,6 +1,19 @@
 spring:
   application:
     name: SmsGatewayLLM
+  datasource:
+    url: jdbc:postgresql://91.146.28.240:5432/sms_gateway
+    username: sms_user
+    password: sms_pass
+    driver-class-name: org.postgresql.Driver
+
+  jpa:
+    hibernate:
+      ddl-auto: none
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.PostgreSQLDialect
+    show-sql: true
 
 server:
   port: 8041
@@ -13,9 +26,13 @@ app:
           chat: "https://gigachat.devices.sberbank.ru"
         chat-settings:
           scope: "GIGACHAT_API_PERS"
+          max-tokens: 512
         auth-key: "OGYwZTY3YTctMjllNi00NGM5LTg3ZGYtZmFkZTljODE5YjYwOjE1MzFhZGFjLTRkYzUtNGYwYS05ZDI1LTZiOWUwMzlkYzYzNw=="
       sms-gateway:
         base-url: "https://api.sms-gate.app/3rdparty/v1"
         username: "QQMBCT"
         password: "b0ettnzk5mdvhg"
+    bot:
+      username: '@vhjgvbhbhvbot'
+      token: "5931458847:AAEhaEA5CgUmEiGKTXFlrIg8JZo0SHdFPpU"
 
