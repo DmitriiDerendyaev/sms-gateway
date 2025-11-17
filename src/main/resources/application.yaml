@@ -35,4 +35,7 @@ app:
     bot:
       username: '@vhjgvbhbhvbot'
       token: "5931458847:AAEhaEA5CgUmEiGKTXFlrIg8JZo0SHdFPpU"
+    vk:
+      group-id: club198086876
+      access-token: "aaQ13axAPQEcczQa"
 

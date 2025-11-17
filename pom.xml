@@ -93,6 +93,13 @@
 			<artifactId>telegrambots-spring-boot-starter</artifactId>
 			<version>6.5.0</version>
 		</dependency>
+
+		<dependency>
+			<groupId>com.vk.api</groupId>
+			<artifactId>sdk</artifactId>
+			<version>1.0.14</version>
+		</dependency>
+
 	</dependencies>
 
 	<build>

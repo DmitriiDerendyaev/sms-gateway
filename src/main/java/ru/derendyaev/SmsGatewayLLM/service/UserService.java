@@ -24,6 +24,11 @@ public class UserService {
         return userRepository.findByTelegramId(telegramId);
     }
 
+    public Optional<UserEntity> getByVkId(Integer vkUserId) {
+        return userRepository.findByVkUserId(vkUserId);
+    }
+
+
     public Optional<UserEntity> getByPhoneNumber(String rawPhone) {
         String phone = normalizePhoneNumber(rawPhone);
         if (phone == null) return Optional.empty();
