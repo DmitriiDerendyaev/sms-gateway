@@ -40,7 +40,8 @@ public class VkWebhookController {
 
     private final VkClient vkClient; // создадим ниже
 
-    private static final String LLM_PREFIX = "/llm";
+    // Префикс /llm больше не обязателен - все сообщения обрабатываются
+    // private static final String LLM_PREFIX = "/llm";
     private static final String ADMIN_CONTACT = "https://t.me/dmitrii_derendyaev";
     
     // Информация для всех сообщений
@@ -75,21 +76,15 @@ public class VkWebhookController {
             }
             deduplicationService.registerMessage(text, String.valueOf(userId), externalMessageId);
 
-            // --- Проверка префикса /llm ---
-            if (text == null || !text.trim().startsWith(LLM_PREFIX)) {
-                log.info("Сообщение без префикса /llm, отправляем подсказку пользователю {}", userId);
-                vkClient.sendMessage(userId, "Команда должна начинаться с /llm" + FOOTER_INFO);
+            // --- Проверка на пустое сообщение ---
+            if (text == null || text.trim().isEmpty()) {
+                log.info("Получено пустое сообщение от пользователя {}", userId);
+                vkClient.sendMessage(userId, "Пожалуйста, отправьте ваш вопрос или запрос" + FOOTER_INFO);
                 return ResponseEntity.ok("ok");
             }
 
-            // --- Удаляем префикс /llm перед отправкой в LLM ---
-            String userMessage = text.trim().substring(LLM_PREFIX.length()).trim();
-            if (userMessage.isEmpty()) {
-                log.info("Сообщение содержит только префикс /llm, отправляем подсказку пользователю {}", userId);
-                vkClient.sendMessage(userId, "После /llm укажите ваш вопрос или запрос" + FOOTER_INFO);
-                return ResponseEntity.ok("ok");
-            }
-
+            // Все сообщения обрабатываются как запросы к LLM (префикс /llm не обязателен)
+            String userMessage = text.trim();
             log.info("Обработка запроса LLM от пользователя {}: {}", userId, userMessage);
 
             // === ВРЕМЕННО ОТКЛЮЧЕНО: Проверка пользователя и баланса ===
