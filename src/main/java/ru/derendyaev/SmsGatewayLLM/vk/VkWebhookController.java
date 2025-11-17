@@ -10,7 +10,7 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 import ru.derendyaev.SmsGatewayLLM.gigaChat.models.message.GigaMessageRequest;
 import ru.derendyaev.SmsGatewayLLM.gigaChat.models.message.GigaMessageResponse;
-import ru.derendyaev.SmsGatewayLLM.model.UserEntity;
+// import ru.derendyaev.SmsGatewayLLM.model.UserEntity; // Временно не используется
 import ru.derendyaev.SmsGatewayLLM.restUtils.GigaChatClient;
 import ru.derendyaev.SmsGatewayLLM.service.MessageDeduplicationService;
 import ru.derendyaev.SmsGatewayLLM.service.SmsService;
@@ -18,7 +18,7 @@ import ru.derendyaev.SmsGatewayLLM.service.UserService;
 import ru.derendyaev.SmsGatewayLLM.utils.PromptBuilder;
 
 import java.util.Map;
-import java.util.Optional;
+// import java.util.Optional; // Временно не используется
 
 @RestController
 @RequestMapping("/webhook")
@@ -42,6 +42,12 @@ public class VkWebhookController {
 
     private static final String LLM_PREFIX = "/llm";
     private static final String ADMIN_CONTACT = "https://t.me/dmitrii_derendyaev";
+    
+    // Информация для всех сообщений
+    private static final String FOOTER_INFO = "\n\n" +
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n" +
+            "👤 Администратор: " + ADMIN_CONTACT + "\n" +
+            "⚠️ Внимание: Сервис скоро станет платным";
 
     @PostMapping("/vk")
     public ResponseEntity<String> handleVkCallback(@RequestBody Map<String, Object> body) {
@@ -72,7 +78,7 @@ public class VkWebhookController {
             // --- Проверка префикса /llm ---
             if (text == null || !text.trim().startsWith(LLM_PREFIX)) {
                 log.info("Сообщение без префикса /llm, отправляем подсказку пользователю {}", userId);
-                vkClient.sendMessage(userId, "Команда должна начинаться с /llm");
+                vkClient.sendMessage(userId, "Команда должна начинаться с /llm" + FOOTER_INFO);
                 return ResponseEntity.ok("ok");
             }
 
@@ -80,12 +86,15 @@ public class VkWebhookController {
             String userMessage = text.trim().substring(LLM_PREFIX.length()).trim();
             if (userMessage.isEmpty()) {
                 log.info("Сообщение содержит только префикс /llm, отправляем подсказку пользователю {}", userId);
-                vkClient.sendMessage(userId, "После /llm укажите ваш вопрос или запрос");
+                vkClient.sendMessage(userId, "После /llm укажите ваш вопрос или запрос" + FOOTER_INFO);
                 return ResponseEntity.ok("ok");
             }
 
             log.info("Обработка запроса LLM от пользователя {}: {}", userId, userMessage);
 
+            // === ВРЕМЕННО ОТКЛЮЧЕНО: Проверка пользователя и баланса ===
+            // Открыт доступ для всех пользователей
+            /*
             // --- Проверяем регистрацию пользователя ---
             Optional<UserEntity> userOpt = userService.getByVkId(userId);
             if (userOpt.isEmpty()) {
@@ -106,16 +115,17 @@ public class VkWebhookController {
                         "⚠️ Недостаточно токенов.\nПополните баланс на сайте.");
                 return ResponseEntity.ok("ok");
             }
+            */
 
             // --- Запрос в GigaChat ---
-            log.info("Отправка запроса в GigaChat для пользователя {}", userId);
+            log.info("Отправка запроса в GigaChat для пользователя {} (открытый доступ)", userId);
             GigaMessageRequest rq = new GigaMessageRequest(
                     "GigaChat",
                     false,
                     0,
                     promptBuilder.buildMessages(userMessage),
                     1,
-                    Math.min(balance, 512),
+                    512, // Фиксированное значение, так как проверка баланса отключена
                     1.0
             );
 
@@ -126,18 +136,20 @@ public class VkWebhookController {
             } catch (Exception e) {
                 log.error("Ошибка при запросе к GigaChat для пользователя {}: {}", userId, e.getMessage(), e);
                 vkClient.sendMessage(userId,
-                        "❌ Ошибка LLM. Связь с админом: " + ADMIN_CONTACT);
+                        "❌ Ошибка LLM. Связь с админом: " + ADMIN_CONTACT + FOOTER_INFO);
                 return ResponseEntity.ok("ok");
             }
 
+            // === ВРЕМЕННО ОТКЛЮЧЕНО: Списание токенов ===
+            /*
             int used = resp.getUsage() != null ? resp.getUsage().getTotalTokens() : 1;
             user.setTokens(Math.max(balance - used, 0));
             userService.saveUser(user);
             log.info("Списано токенов: {}, остаток: {}", used, user.getTokens());
+            */
 
-            String responseText = resp.toString() + "\n\n" +
-                    "💰 Потрачено токенов: " + used + "\n" +
-                    "📊 Остаток токенов: " + user.getTokens();
+            // Формируем ответ с информацией об администраторе и предупреждением
+            String responseText = resp.toString() + FOOTER_INFO;
             
             log.info("Отправка ответа пользователю {}", userId);
             vkClient.sendMessage(userId, responseText);
