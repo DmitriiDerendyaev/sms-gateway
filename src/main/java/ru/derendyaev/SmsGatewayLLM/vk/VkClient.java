@@ -13,10 +13,10 @@ import org.springframework.web.client.RestTemplate;
 @RequiredArgsConstructor
 public class VkClient {
 
-    @Value("${vk.access-token}")
+    @Value("${app.values.vk.access-token}")
     private String token;
 
-    @Value("${vk.group-id}")
+    @Value("${app.values.vk.group-id}")
     private String groupId;
 
     private static final String API_URL = "https://api.vk.com/method/messages.send";
