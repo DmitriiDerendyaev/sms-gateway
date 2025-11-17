@@ -71,13 +71,25 @@ public class VkWebhookController {
 
             // --- Проверка префикса /llm ---
             if (text == null || !text.trim().startsWith(LLM_PREFIX)) {
+                log.info("Сообщение без префикса /llm, отправляем подсказку пользователю {}", userId);
                 vkClient.sendMessage(userId, "Команда должна начинаться с /llm");
                 return ResponseEntity.ok("ok");
             }
 
+            // --- Удаляем префикс /llm перед отправкой в LLM ---
+            String userMessage = text.trim().substring(LLM_PREFIX.length()).trim();
+            if (userMessage.isEmpty()) {
+                log.info("Сообщение содержит только префикс /llm, отправляем подсказку пользователю {}", userId);
+                vkClient.sendMessage(userId, "После /llm укажите ваш вопрос или запрос");
+                return ResponseEntity.ok("ok");
+            }
+
+            log.info("Обработка запроса LLM от пользователя {}: {}", userId, userMessage);
+
             // --- Проверяем регистрацию пользователя ---
-            Optional<UserEntity> userOpt = userService.getByVkId(userId); // нужно добавить метод!
+            Optional<UserEntity> userOpt = userService.getByVkId(userId);
             if (userOpt.isEmpty()) {
+                log.warn("Пользователь {} не найден в базе данных", userId);
                 vkClient.sendMessage(userId,
                         "❌ Ваш аккаунт не зарегистрирован.\n" +
                                 "Получите доступ у администратора: " + ADMIN_CONTACT);
@@ -86,19 +98,22 @@ public class VkWebhookController {
 
             UserEntity user = userOpt.get();
             int balance = user.getTokens();
+            log.info("Пользователь {} найден, баланс токенов: {}", userId, balance);
 
             if (balance <= 0) {
+                log.warn("У пользователя {} недостаточно токенов", userId);
                 vkClient.sendMessage(userId,
                         "⚠️ Недостаточно токенов.\nПополните баланс на сайте.");
                 return ResponseEntity.ok("ok");
             }
 
             // --- Запрос в GigaChat ---
+            log.info("Отправка запроса в GigaChat для пользователя {}", userId);
             GigaMessageRequest rq = new GigaMessageRequest(
                     "GigaChat",
                     false,
                     0,
-                    promptBuilder.buildMessages(text),
+                    promptBuilder.buildMessages(userMessage),
                     1,
                     Math.min(balance, 512),
                     1.0
@@ -107,7 +122,9 @@ public class VkWebhookController {
             GigaMessageResponse resp;
             try {
                 resp = gigaChatClient.gigaMessageGenerate(rq);
+                log.info("Получен ответ от GigaChat для пользователя {}", userId);
             } catch (Exception e) {
+                log.error("Ошибка при запросе к GigaChat для пользователя {}: {}", userId, e.getMessage(), e);
                 vkClient.sendMessage(userId,
                         "❌ Ошибка LLM. Связь с админом: " + ADMIN_CONTACT);
                 return ResponseEntity.ok("ok");
@@ -116,13 +133,14 @@ public class VkWebhookController {
             int used = resp.getUsage() != null ? resp.getUsage().getTotalTokens() : 1;
             user.setTokens(Math.max(balance - used, 0));
             userService.saveUser(user);
+            log.info("Списано токенов: {}, остаток: {}", used, user.getTokens());
 
-            vkClient.sendMessage(
-                    userId,
-                    resp.toString() + "\n\n" +
-                            "💰 Потрачено токенов: " + used + "\n" +
-                            "📊 Остаток токенов: " + user.getTokens()
-            );
+            String responseText = resp.toString() + "\n\n" +
+                    "💰 Потрачено токенов: " + used + "\n" +
+                    "📊 Остаток токенов: " + user.getTokens();
+            
+            log.info("Отправка ответа пользователю {}", userId);
+            vkClient.sendMessage(userId, responseText);
 
             return ResponseEntity.ok("ok");
         }
