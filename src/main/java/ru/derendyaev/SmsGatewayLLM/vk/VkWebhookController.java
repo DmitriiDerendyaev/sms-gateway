@@ -10,7 +10,7 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 import ru.derendyaev.SmsGatewayLLM.gigaChat.models.message.GigaMessageRequest;
 import ru.derendyaev.SmsGatewayLLM.gigaChat.models.message.GigaMessageResponse;
-// import ru.derendyaev.SmsGatewayLLM.model.UserEntity; // Временно не используется
+import ru.derendyaev.SmsGatewayLLM.model.UserEntity;
 import ru.derendyaev.SmsGatewayLLM.restUtils.GigaChatClient;
 import ru.derendyaev.SmsGatewayLLM.service.MessageDeduplicationService;
 import ru.derendyaev.SmsGatewayLLM.service.SmsService;
@@ -18,6 +18,7 @@ import ru.derendyaev.SmsGatewayLLM.service.UserService;
 import ru.derendyaev.SmsGatewayLLM.utils.PromptBuilder;
 
 import java.util.Map;
+import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 
 @RestController
@@ -92,7 +93,7 @@ public class VkWebhookController {
             log.debug("Обработанное сообщение: '{}' (длина: {})", userMessage, userMessage.length());
 
             // --- Обработка команды /start (ПЕРЕД дедупликацией, чтобы команда всегда обрабатывалась) ---
-            if ("/start".equalsIgnoreCase(userMessage) || "slash start".equalsIgnoreCase(userMessage)) {
+            if ("/start".equalsIgnoreCase(userMessage) || "Начать".equalsIgnoreCase(userMessage)) {
                 log.info("Получена команда /start от пользователя {}", userId);
                 vkUserStates.put(userId, "WAITING_PHONE");
                 vkClient.sendMessage(userId, WELCOME_MESSAGE + FOOTER_INFO);
@@ -128,40 +129,58 @@ public class VkWebhookController {
             // Все остальные сообщения обрабатываются как запросы к LLM (префикс /llm не обязателен)
             log.info("Обработка запроса LLM от пользователя {}: {}", userId, userMessage);
 
-            // === ВРЕМЕННО ОТКЛЮЧЕНО: Проверка пользователя и баланса ===
-            // Открыт доступ для всех пользователей
-            /*
-            // --- Проверяем регистрацию пользователя ---
+            // --- Проверяем регистрацию пользователя по VK ID ---
             Optional<UserEntity> userOpt = userService.getByVkId(userId);
             if (userOpt.isEmpty()) {
                 log.warn("Пользователь {} не найден в базе данных", userId);
                 vkClient.sendMessage(userId,
-                        "❌ Ваш аккаунт не зарегистрирован.\n" +
-                                "Получите доступ у администратора: " + ADMIN_CONTACT);
+                        "❌ Ваш аккаунт не зарегистрирован.\n\n" +
+                                "Для регистрации отправьте команду /start и следуйте инструкциям.\n\n" +
+                                "Если у вас возникли проблемы, свяжитесь с администратором: " + ADMIN_CONTACT + FOOTER_INFO);
                 return ResponseEntity.ok("ok");
             }
 
             UserEntity user = userOpt.get();
-            int balance = user.getTokens();
-            log.info("Пользователь {} найден, баланс токенов: {}", userId, balance);
-
-            if (balance <= 0) {
-                log.warn("У пользователя {} недостаточно токенов", userId);
+            
+            // --- Проверяем, что у пользователя есть привязанный номер телефона ---
+            if (user.getPhoneNumber() == null || user.getPhoneNumber().trim().isEmpty()) {
+                log.warn("У пользователя {} нет привязанного номера телефона", userId);
                 vkClient.sendMessage(userId,
-                        "⚠️ Недостаточно токенов.\nПополните баланс на сайте.");
+                        "❌ У вас нет привязанного номера телефона.\n\n" +
+                                "Для регистрации отправьте команду /start и введите ваш номер телефона.\n\n" +
+                                "Если у вас возникли проблемы, свяжитесь с администратором: " + ADMIN_CONTACT + FOOTER_INFO);
                 return ResponseEntity.ok("ok");
             }
-            */
+
+            int balance = user.getTokens();
+            log.info("Пользователь {} найден, номер телефона: {}, баланс токенов: {}", 
+                    userId, user.getPhoneNumber(), balance);
+
+            // --- Проверяем баланс токенов ---
+            if (balance <= 0) {
+                log.warn("У пользователя {} недостаточно токенов (баланс: {})", userId, balance);
+                vkClient.sendMessage(userId,
+                        "⚠️ Недостаточно токенов.\n\n" +
+                                "Ваш текущий баланс: " + balance + " токенов.\n" +
+                                "Пополните баланс для продолжения работы.\n\n" +
+                                "Свяжитесь с администратором: " + ADMIN_CONTACT + FOOTER_INFO);
+                return ResponseEntity.ok("ok");
+            }
 
             // --- Запрос в GigaChat ---
-            log.info("Отправка запроса в GigaChat для пользователя {} (открытый доступ)", userId);
+            // Используем баланс токенов для max_tokens, но не более доступного баланса
+            // Оставляем небольшой запас для обработки ответа
+            int maxTokens = Math.min(balance, 512);
+            log.info("Отправка запроса в GigaChat для пользователя {} (баланс: {}, max_tokens: {})", 
+                    userId, balance, maxTokens);
+            
             GigaMessageRequest rq = new GigaMessageRequest(
                     "GigaChat",
                     false,
                     0,
                     promptBuilder.buildMessages(userMessage),
                     1,
-                    512, // Фиксированное значение, так как проверка баланса отключена
+                    maxTokens,
                     1.0
             );
 
@@ -176,16 +195,18 @@ public class VkWebhookController {
                 return ResponseEntity.ok("ok");
             }
 
-            // === ВРЕМЕННО ОТКЛЮЧЕНО: Списание токенов ===
-            /*
+            // --- Списание токенов ---
             int used = resp.getUsage() != null ? resp.getUsage().getTotalTokens() : 1;
-            user.setTokens(Math.max(balance - used, 0));
+            int newBalance = Math.max(balance - used, 0);
+            user.setTokens(newBalance);
             userService.saveUser(user);
-            log.info("Списано токенов: {}, остаток: {}", used, user.getTokens());
-            */
+            log.info("Списано токенов: {}, было: {}, остаток: {}", used, balance, newBalance);
 
-            // Формируем ответ с информацией об администраторе и предупреждением
-            String responseText = resp.toString() + FOOTER_INFO;
+            // Формируем ответ с информацией об использованных токенах и остатке
+            String responseText = resp.toString() + 
+                    "\n\n💰 Потрачено токенов: " + used + 
+                    "\n📊 Остаток токенов: " + newBalance +
+                    FOOTER_INFO;
             
             log.info("Отправка ответа пользователю {}", userId);
             vkClient.sendMessage(userId, responseText);

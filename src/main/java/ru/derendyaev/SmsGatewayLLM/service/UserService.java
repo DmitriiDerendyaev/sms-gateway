@@ -97,18 +97,16 @@ public class UserService {
                     .build();
             userRepository.save(newUser);
             log.info("Создан новый VK пользователь: vkUserId={}, phone={}, username={}", vkUserId, phone, username);
-            return "✅ Регистрация успешна! Ваш номер телефона: +" + phone + 
+            return "✅ Регистрация успешна! Ваш номер телефона: 8" + phone +
                    "\n\nТеперь вы можете использовать бота для взаимодействия с нейросетью.";
         } else {
-            // Пользователь с таким телефоном уже есть - добавляем VK User ID
+            // Пользователь с таким телефоном уже есть - добавляем только VK User ID
             UserEntity existingUser = userByPhoneOpt.get();
             existingUser.setVkUserId(vkUserId);
-            // Обновляем username, если он был передан и не пустой
-            if (username != null && !username.trim().isEmpty()) {
-                existingUser.setUsername(username);
-            }
+            // username не изменяем, оставляем существующий
             userRepository.save(existingUser);
-            log.info("Обновлён существующий пользователь: добавлен vkUserId={} для phone={}", vkUserId, phone);
+            log.info("Обновлён существующий пользователь: добавлен vkUserId={} для phone={}, username остался прежним: {}", 
+                    vkUserId, phone, existingUser.getUsername());
             return "✅ Ваш VK аккаунт успешно привязан к номеру телефона: +" + phone + 
                    "\n\nТеперь вы можете использовать бота для взаимодействия с нейросетью.";
         }
