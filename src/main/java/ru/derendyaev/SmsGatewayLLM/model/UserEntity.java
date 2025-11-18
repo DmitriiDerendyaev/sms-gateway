@@ -20,6 +20,9 @@ public class UserEntity {
     @Column(nullable = false, unique = true)
     private Long telegramId;
 
+    @Column(name = "vk_user_id")
+    private Integer vkUserId;
+
     private String phoneNumber;
 
     private String username;
