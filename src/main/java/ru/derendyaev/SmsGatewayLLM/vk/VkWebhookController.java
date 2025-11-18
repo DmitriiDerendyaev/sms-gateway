@@ -18,7 +18,7 @@ import ru.derendyaev.SmsGatewayLLM.service.UserService;
 import ru.derendyaev.SmsGatewayLLM.utils.PromptBuilder;
 
 import java.util.Map;
-// import java.util.Optional; // Временно не используется
+import java.util.concurrent.ConcurrentHashMap;
 
 @RestController
 @RequestMapping("/webhook")
@@ -40,6 +40,9 @@ public class VkWebhookController {
 
     private final VkClient vkClient; // создадим ниже
 
+    // Хранение состояний пользователей VK (ожидание номера телефона)
+    private final Map<Integer, String> vkUserStates = new ConcurrentHashMap<>();
+
     // Префикс /llm больше не обязателен - все сообщения обрабатываются
     // private static final String LLM_PREFIX = "/llm";
     private static final String ADMIN_CONTACT = "https://t.me/dmitrii_derendyaev";
@@ -49,6 +52,12 @@ public class VkWebhookController {
             "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n" +
             "👤 Администратор: " + ADMIN_CONTACT + "\n" +
             "⚠️ Внимание: Сервис скоро станет платным";
+    
+    // Приветственное сообщение для команды /start
+    private static final String WELCOME_MESSAGE = "👋 Привет! Добро пожаловать в SmsGateway LLM!\n\n" +
+            "🤖 Это бот для использования и взаимодействия с нейросетью.\n" +
+            "📱 Пожалуйста, введите ваш номер телефона в формате:\n" +
+            "   +7XXXXXXXXXX или 8XXXXXXXXXX";
 
     @PostMapping("/vk")
     public ResponseEntity<String> handleVkCallback(@RequestBody Map<String, Object> body) {
@@ -83,8 +92,33 @@ public class VkWebhookController {
                 return ResponseEntity.ok("ok");
             }
 
-            // Все сообщения обрабатываются как запросы к LLM (префикс /llm не обязателен)
             String userMessage = text.trim();
+
+            // --- Обработка состояния ожидания телефона ---
+            if (vkUserStates.containsKey(userId)) {
+                String state = vkUserStates.get(userId);
+                if ("WAITING_PHONE".equals(state)) {
+                    // Получаем username из сообщения (если доступно) или используем VK User ID
+                    String username = null; // VK API не передаёт username напрямую в webhook
+                    
+                    // Регистрируем пользователя с телефоном
+                    String result = userService.registerVkUserWithPhone(userId, username, userMessage);
+                    vkClient.sendMessage(userId, result + FOOTER_INFO);
+                    vkUserStates.remove(userId);
+                    log.info("Пользователь {} зарегистрирован с телефоном", userId);
+                    return ResponseEntity.ok("ok");
+                }
+            }
+
+            // --- Обработка команды /start ---
+            if ("/start".equalsIgnoreCase(userMessage) || "slash start".equalsIgnoreCase(userMessage)) {
+                log.info("Получена команда /start от пользователя {}", userId);
+                vkUserStates.put(userId, "WAITING_PHONE");
+                vkClient.sendMessage(userId, WELCOME_MESSAGE + FOOTER_INFO);
+                return ResponseEntity.ok("ok");
+            }
+
+            // Все остальные сообщения обрабатываются как запросы к LLM (префикс /llm не обязателен)
             log.info("Обработка запроса LLM от пользователя {}: {}", userId, userMessage);
 
             // === ВРЕМЕННО ОТКЛЮЧЕНО: Проверка пользователя и баланса ===

@@ -1,6 +1,7 @@
 package ru.derendyaev.SmsGatewayLLM.service;
 
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import ru.derendyaev.SmsGatewayLLM.model.PromoCodeEntity;
@@ -8,9 +9,11 @@ import ru.derendyaev.SmsGatewayLLM.model.UserEntity;
 import ru.derendyaev.SmsGatewayLLM.repository.PromoCodeRepository;
 import ru.derendyaev.SmsGatewayLLM.repository.UserRepository;
 
+import java.time.LocalDateTime;
 import java.util.Optional;
 import java.util.UUID;
 
+@Slf4j
 @Service
 @RequiredArgsConstructor
 public class UserService {
@@ -61,6 +64,54 @@ public class UserService {
 
         // Берем последние 10 цифр
         return digits.substring(digits.length() - 10);
+    }
+
+    /**
+     * Регистрация или обновление VK пользователя с номером телефона.
+     * Если пользователя с таким телефоном нет - создаёт нового.
+     * Если есть - добавляет VK User ID к существующему пользователю.
+     * 
+     * @param vkUserId VK User ID
+     * @param username Имя пользователя (может быть null)
+     * @param rawPhone Номер телефона в любом формате
+     * @return Сообщение о результате регистрации
+     */
+    @Transactional
+    public String registerVkUserWithPhone(Integer vkUserId, String username, String rawPhone) {
+        String phone = normalizePhoneNumber(rawPhone);
+        if (phone == null) {
+            return "❌ Некорректный номер телефона. Пожалуйста, введите номер в формате: +7XXXXXXXXXX или 8XXXXXXXXXX";
+        }
+
+        // Ищем пользователя по номеру телефона
+        Optional<UserEntity> userByPhoneOpt = userRepository.findByPhoneNumber(phone);
+
+        if (userByPhoneOpt.isEmpty()) {
+            // Пользователя с таким телефоном нет - создаём нового
+            UserEntity newUser = UserEntity.builder()
+                    .vkUserId(vkUserId)
+                    .phoneNumber(phone)
+                    .username(username != null ? username : "vk_" + vkUserId)
+                    .tokens(0)
+                    .createdAt(LocalDateTime.now())
+                    .build();
+            userRepository.save(newUser);
+            log.info("Создан новый VK пользователь: vkUserId={}, phone={}, username={}", vkUserId, phone, username);
+            return "✅ Регистрация успешна! Ваш номер телефона: +" + phone + 
+                   "\n\nТеперь вы можете использовать бота для взаимодействия с нейросетью.";
+        } else {
+            // Пользователь с таким телефоном уже есть - добавляем VK User ID
+            UserEntity existingUser = userByPhoneOpt.get();
+            existingUser.setVkUserId(vkUserId);
+            // Обновляем username, если он был передан и не пустой
+            if (username != null && !username.trim().isEmpty()) {
+                existingUser.setUsername(username);
+            }
+            userRepository.save(existingUser);
+            log.info("Обновлён существующий пользователь: добавлен vkUserId={} для phone={}", vkUserId, phone);
+            return "✅ Ваш VK аккаунт успешно привязан к номеру телефона: +" + phone + 
+                   "\n\nТеперь вы можете использовать бота для взаимодействия с нейросетью.";
+        }
     }
 
 
