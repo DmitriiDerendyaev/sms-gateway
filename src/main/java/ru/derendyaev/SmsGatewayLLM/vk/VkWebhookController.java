@@ -49,7 +49,7 @@ public class VkWebhookController {
     
     // Информация для всех сообщений
     private static final String FOOTER_INFO = "\n\n" +
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n" +
+            "━━━━━━━━━━━━━━━━━━━━━━\n" +
             "👤 Администратор: " + ADMIN_CONTACT + "\n" +
             "⚠️ Внимание: Сервис скоро станет платным";
     
@@ -75,15 +75,11 @@ public class VkWebhookController {
 
             Integer userId = (Integer) message.get("from_id");
             String text = (String) message.get("text");
-            String externalMessageId = message.get("id").toString();
+            Object messageIdObj = message.get("id");
+            String externalMessageId = messageIdObj != null ? messageIdObj.toString() : null;
 
-            log.info("Сообщение из ВК: userId={}, text={}", userId, text);
-
-            // --- Дедупликация ---
-            if (deduplicationService.isDuplicate(text, String.valueOf(userId), externalMessageId)) {
-                return ResponseEntity.ok("ok");
-            }
-            deduplicationService.registerMessage(text, String.valueOf(userId), externalMessageId);
+            log.info("Сообщение из ВК: userId={}, text='{}', messageId={}", userId, text, externalMessageId);
+            log.debug("Полное сообщение: {}", message);
 
             // --- Проверка на пустое сообщение ---
             if (text == null || text.trim().isEmpty()) {
@@ -93,11 +89,22 @@ public class VkWebhookController {
             }
 
             String userMessage = text.trim();
+            log.debug("Обработанное сообщение: '{}' (длина: {})", userMessage, userMessage.length());
 
-            // --- Обработка состояния ожидания телефона ---
+            // --- Обработка команды /start (ПЕРЕД дедупликацией, чтобы команда всегда обрабатывалась) ---
+            if ("/start".equalsIgnoreCase(userMessage) || "slash start".equalsIgnoreCase(userMessage)) {
+                log.info("Получена команда /start от пользователя {}", userId);
+                vkUserStates.put(userId, "WAITING_PHONE");
+                vkClient.sendMessage(userId, WELCOME_MESSAGE + FOOTER_INFO);
+                // Не регистрируем команду в дедупликации, чтобы её можно было использовать повторно
+                return ResponseEntity.ok("ok");
+            }
+
+            // --- Обработка состояния ожидания телефона (тоже ПЕРЕД дедупликацией) ---
             if (vkUserStates.containsKey(userId)) {
                 String state = vkUserStates.get(userId);
                 if ("WAITING_PHONE".equals(state)) {
+                    log.info("Пользователь {} в состоянии WAITING_PHONE, обрабатываем номер телефона", userId);
                     // Получаем username из сообщения (если доступно) или используем VK User ID
                     String username = null; // VK API не передаёт username напрямую в webhook
                     
@@ -106,17 +113,17 @@ public class VkWebhookController {
                     vkClient.sendMessage(userId, result + FOOTER_INFO);
                     vkUserStates.remove(userId);
                     log.info("Пользователь {} зарегистрирован с телефоном", userId);
+                    // Не регистрируем в дедупликации, так как это одноразовое действие
                     return ResponseEntity.ok("ok");
                 }
             }
 
-            // --- Обработка команды /start ---
-            if ("/start".equalsIgnoreCase(userMessage) || "slash start".equalsIgnoreCase(userMessage)) {
-                log.info("Получена команда /start от пользователя {}", userId);
-                vkUserStates.put(userId, "WAITING_PHONE");
-                vkClient.sendMessage(userId, WELCOME_MESSAGE + FOOTER_INFO);
+            // --- Дедупликация (для обычных сообщений) ---
+            if (deduplicationService.isDuplicate(text, String.valueOf(userId), externalMessageId)) {
+                log.debug("Сообщение от пользователя {} является дубликатом, пропускаем", userId);
                 return ResponseEntity.ok("ok");
             }
+            deduplicationService.registerMessage(text, String.valueOf(userId), externalMessageId);
 
             // Все остальные сообщения обрабатываются как запросы к LLM (префикс /llm не обязателен)
             log.info("Обработка запроса LLM от пользователя {}: {}", userId, userMessage);
