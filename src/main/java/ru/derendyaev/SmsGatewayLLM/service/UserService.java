@@ -92,12 +92,13 @@ public class UserService {
                     .vkUserId(vkUserId)
                     .phoneNumber(phone)
                     .username(username != null ? username : "vk_" + vkUserId)
-                    .tokens(0)
+                    .tokens(5000) // Начальный бонус при регистрации
                     .createdAt(LocalDateTime.now())
                     .build();
             userRepository.save(newUser);
-            log.info("Создан новый VK пользователь: vkUserId={}, phone={}, username={}", vkUserId, phone, username);
+            log.info("Создан новый VK пользователь: vkUserId={}, phone={}, username={}, tokens=5000", vkUserId, phone, username);
             return "✅ Регистрация успешна! Ваш номер телефона: 8" + phone +
+                   "\n\n💰 Вам начислено 5000 токенов в подарок!" +
                    "\n\nТеперь вы можете использовать бота для взаимодействия с нейросетью.";
         } else {
             // Пользователь с таким телефоном уже есть - добавляем только VK User ID
@@ -235,6 +236,46 @@ public class UserService {
 
         // Телефона нет в базе — ошибка
         return "❌ Указанный номер не найден среди зарегистрированных пользователей.";
+    }
+
+    /**
+     * Активация промокода для VK пользователя по VK User ID.
+     * Начисляет токены пользователю, если промокод валиден.
+     * 
+     * @param vkUserId VK User ID
+     * @param promoCode Код промокода
+     * @return Сообщение о результате активации
+     */
+    @Transactional
+    public String activatePromoForVkUser(Integer vkUserId, String promoCode) {
+        // Проверяем наличие промокода
+        Optional<PromoCodeEntity> promoOpt = promoCodeRepository.findByCode(promoCode);
+        if (promoOpt.isEmpty() || promoOpt.get().getIsUsed()) {
+            return "❌ Промокод не найден или уже использован.";
+        }
+        PromoCodeEntity promo = promoOpt.get();
+
+        // Ищем пользователя по VK ID
+        Optional<UserEntity> userOpt = userRepository.findByVkUserId(vkUserId);
+        if (userOpt.isEmpty()) {
+            return "❌ Пользователь не найден. Пожалуйста, сначала зарегистрируйтесь командой /start.";
+        }
+
+        UserEntity user = userOpt.get();
+        
+        // Начисляем токены
+        user.setTokens(user.getTokens() + promo.getTokenAmount());
+        userRepository.save(user);
+
+        // Помечаем промокод как использованный
+        promo.setIsUsed(true);
+        promoCodeRepository.save(promo);
+
+        log.info("Промокод {} активирован для VK пользователя {}: начислено {} токенов, баланс: {}", 
+                promoCode, vkUserId, promo.getTokenAmount(), user.getTokens());
+
+        return "✅ Промокод активирован!\n💰 Начислено " + promo.getTokenAmount() + 
+               " токенов.\n📊 Текущий баланс: " + user.getTokens() + " токенов.";
     }
 
 }

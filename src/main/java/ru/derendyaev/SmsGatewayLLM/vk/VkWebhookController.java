@@ -56,7 +56,10 @@ public class VkWebhookController {
     
     // Приветственное сообщение для команды /start
     private static final String WELCOME_MESSAGE = "👋 Привет! Добро пожаловать в SmsGateway LLM!\n\n" +
-            "🤖 Это бот для использования и взаимодействия с нейросетью.\n" +
+            "🤖 Это бот для использования и взаимодействия с нейросетью.\n\n" +
+            "💰 При регистрации вы получите 5000 токенов в подарок!\n\n" +
+            "🎟️ Вы также можете активировать промокод командой:\n" +
+            "   /promo <ваш_промокод>\n\n" +
             "📱 Пожалуйста, введите ваш номер телефона в формате:\n" +
             "   +7XXXXXXXXXX или 8XXXXXXXXXX";
 
@@ -98,6 +101,33 @@ public class VkWebhookController {
                 vkUserStates.put(userId, "WAITING_PHONE");
                 vkClient.sendMessage(userId, WELCOME_MESSAGE + FOOTER_INFO);
                 // Не регистрируем команду в дедупликации, чтобы её можно было использовать повторно
+                return ResponseEntity.ok("ok");
+            }
+
+            // --- Обработка команды /promo (активация промокода) ---
+            if (userMessage.startsWith("/promo")) {
+                log.info("Получена команда /promo от пользователя {}", userId);
+                String[] parts = userMessage.split(" ");
+                if (parts.length < 2) {
+                    vkClient.sendMessage(userId, "❌ Введите промокод в формате: /promo ABCD1234" + FOOTER_INFO);
+                    return ResponseEntity.ok("ok");
+                }
+
+                String promoCode = parts[1].trim();
+                
+                // Проверяем, зарегистрирован ли пользователь
+                Optional<UserEntity> userOpt = userService.getByVkId(userId);
+                if (userOpt.isEmpty()) {
+                    vkClient.sendMessage(userId,
+                            "❌ Вы не зарегистрированы.\n\n" +
+                            "Для регистрации отправьте команду /start и следуйте инструкциям." + FOOTER_INFO);
+                    return ResponseEntity.ok("ok");
+                }
+
+                // Активируем промокод
+                String result = userService.activatePromoForVkUser(userId, promoCode);
+                vkClient.sendMessage(userId, result + FOOTER_INFO);
+                // Не регистрируем в дедупликации, чтобы можно было повторить с другим промокодом
                 return ResponseEntity.ok("ok");
             }
 
