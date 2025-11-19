@@ -12,9 +12,11 @@ import ru.derendyaev.SmsGatewayLLM.gigaChat.models.message.GigaMessageResponse;
 import ru.derendyaev.SmsGatewayLLM.model.UserEntity;
 import ru.derendyaev.SmsGatewayLLM.restUtils.GigaChatClient;
 import ru.derendyaev.SmsGatewayLLM.service.MessageDeduplicationService;
+import ru.derendyaev.SmsGatewayLLM.service.PaymentService;
 import ru.derendyaev.SmsGatewayLLM.service.SmsService;
 import ru.derendyaev.SmsGatewayLLM.service.UserService;
 import ru.derendyaev.SmsGatewayLLM.utils.PromptBuilder;
+import ru.derendyaev.SmsGatewayLLM.vk.VkClient;
 
 import java.util.Optional;
 @Slf4j
@@ -28,6 +30,8 @@ public class WebhookController {
     private final PromptBuilder promptBuilder;
     private final UserService userService;
     private final MessageDeduplicationService deduplicationService;
+    private final PaymentService paymentService;
+    private final VkClient vkClient;
 
     @Value("${app.values.api.giga-chat.chat-settings.max-tokens:512}")
     private int defaultMaxTokens;
@@ -43,6 +47,33 @@ public class WebhookController {
         String externalMessageId = request.getPayload().getMessageId(); // если есть
 
         log.info(request.getPayload().toString());
+
+        // ------------------- Обработка платежей от номера 900 -------------------
+        if ("900".equals(rawPhoneNumber)) {
+            log.info("Получено SMS об оплате от номера 900: {}", userMessage);
+            
+            // Обрабатываем платеж
+            PaymentService.PaymentResult result = paymentService.processPayment(userMessage);
+            if (result != null) {
+                log.info("✅ Платеж успешно обработан: пользователь VK {}, начислено {} токенов ({} руб.), баланс: {}", 
+                        result.getVkUserId(), result.getTokensAdded(), result.getAmount(), result.getNewBalance());
+                
+                // Отправляем уведомление пользователю в VK
+                String notification = String.format(
+                        "✅ Платеж успешно обработан!\n\n" +
+                        "💰 Начислено токенов: %d\n" +
+                        "💵 Сумма платежа: %.2f руб.\n" +
+                        "📊 Текущий баланс: %d токенов",
+                        result.getTokensAdded(), result.getAmount(), result.getNewBalance()
+                );
+                vkClient.sendMessage(result.getVkUserId(), notification);
+                
+                return ResponseEntity.status(HttpStatus.OK).build();
+            } else {
+                log.warn("⚠️ Не удалось обработать платеж из SMS: {}", userMessage);
+                return ResponseEntity.status(HttpStatus.UNPROCESSABLE_ENTITY).build();
+            }
+        }
 
         // ------------------- Нормализация номера -------------------
         String phoneNumber = userService.normalizePhoneNumber(rawPhoneNumber);

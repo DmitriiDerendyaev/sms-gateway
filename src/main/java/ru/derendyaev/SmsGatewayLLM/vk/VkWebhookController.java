@@ -13,6 +13,7 @@ import ru.derendyaev.SmsGatewayLLM.gigaChat.models.message.GigaMessageResponse;
 import ru.derendyaev.SmsGatewayLLM.model.UserEntity;
 import ru.derendyaev.SmsGatewayLLM.restUtils.GigaChatClient;
 import ru.derendyaev.SmsGatewayLLM.service.MessageDeduplicationService;
+import ru.derendyaev.SmsGatewayLLM.service.PaymentService;
 import ru.derendyaev.SmsGatewayLLM.service.SmsService;
 import ru.derendyaev.SmsGatewayLLM.service.UserService;
 import ru.derendyaev.SmsGatewayLLM.utils.PromptBuilder;
@@ -32,6 +33,7 @@ public class VkWebhookController {
     private final PromptBuilder promptBuilder;
     private final UserService userService;
     private final MessageDeduplicationService deduplicationService;
+    private final PaymentService paymentService;
 
     @Value("${app.values.vk.group-id}")
     private String groupId;
@@ -60,8 +62,13 @@ public class VkWebhookController {
             "💰 При регистрации вы получите 5000 токенов в подарок!\n\n" +
             "🎟️ Вы также можете активировать промокод командой:\n" +
             "   /promo <ваш_промокод>\n\n" +
+            "💳 Для покупки токенов используйте команду:\n" +
+            "   /buy\n" +
+            "   1 рубль = 100 токенов\n\n" +
             "📱 Пожалуйста, введите ваш номер телефона в формате:\n" +
             "   +7XXXXXXXXXX или 8XXXXXXXXXX";
+    
+    private static final String PAYMENT_PHONE = "892225070232";
 
     @PostMapping("/vk")
     public ResponseEntity<String> handleVkCallback(@RequestBody Map<String, Object> body) {
@@ -128,6 +135,36 @@ public class VkWebhookController {
                 String result = userService.activatePromoForVkUser(userId, promoCode);
                 vkClient.sendMessage(userId, result + FOOTER_INFO);
                 // Не регистрируем в дедупликации, чтобы можно было повторить с другим промокодом
+                return ResponseEntity.ok("ok");
+            }
+
+            // --- Обработка команды /buy (покупка токенов) ---
+            if ("/buy".equalsIgnoreCase(userMessage)) {
+                log.info("Получена команда /buy от пользователя {}", userId);
+                
+                // Проверяем, зарегистрирован ли пользователь
+                Optional<UserEntity> userOpt = userService.getByVkId(userId);
+                if (userOpt.isEmpty()) {
+                    vkClient.sendMessage(userId,
+                            "❌ Вы не зарегистрированы.\n\n" +
+                            "Для регистрации отправьте команду /start и следуйте инструкциям." + FOOTER_INFO);
+                    return ResponseEntity.ok("ok");
+                }
+
+                // Генерируем платежный код
+                String paymentCode = paymentService.generatePaymentCode(userId);
+                
+                String buyMessage = "💳 Покупка токенов\n\n" +
+                        "💰 Курс: 1 рубль = 100 токенов\n\n" +
+                        "📱 Для оплаты выполните СБП перевод на номер:\n" +
+                        "   " + PAYMENT_PHONE + "\n\n" +
+                        "🔑 В комментарии к переводу укажите код:\n" +
+                        "   «" + paymentCode + "»\n\n" +
+                        "✅ После оплаты токены будут автоматически начислены на ваш счет.\n\n" +
+                        "⏱️ Код действителен в течение 24 часов.";
+                
+                vkClient.sendMessage(userId, buyMessage + FOOTER_INFO);
+                // Не регистрируем в дедупликации, чтобы можно было повторить покупку
                 return ResponseEntity.ok("ok");
             }
 
