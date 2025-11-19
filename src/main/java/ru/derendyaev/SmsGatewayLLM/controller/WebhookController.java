@@ -42,6 +42,8 @@ public class WebhookController {
         String rawPhoneNumber = request.getPayload().getPhoneNumber();
         String externalMessageId = request.getPayload().getMessageId(); // если есть
 
+        log.info(request.getPayload().toString());
+
         // ------------------- Нормализация номера -------------------
         String phoneNumber = userService.normalizePhoneNumber(rawPhoneNumber);
         if (phoneNumber == null) {

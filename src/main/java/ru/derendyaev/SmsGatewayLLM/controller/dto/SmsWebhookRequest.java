@@ -18,5 +18,16 @@ public class SmsWebhookRequest {
         private String messageId;
         private String phoneNumber;
         private int simNumber;
+
+        @Override
+        public String toString() {
+            return "Payload{" +
+                    "message='" + message + '\'' +
+                    ", receivedAt='" + receivedAt + '\'' +
+                    ", messageId='" + messageId + '\'' +
+                    ", phoneNumber='" + phoneNumber + '\'' +
+                    ", simNumber=" + simNumber +
+                    '}';
+        }
     }
 }
