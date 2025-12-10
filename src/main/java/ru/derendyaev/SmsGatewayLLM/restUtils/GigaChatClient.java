@@ -92,7 +92,8 @@ public class GigaChatClient {
     }
 
     /**
-     * Загружает файл в GigaChat через API файлов
+     * Загружает файл в хранилище GigaChat через API файлов
+     * Файл будет доступен для использования в запросах на генерацию ответов
      * @param audioBytes байты аудиофайла
      * @param filename имя файла (например, "audio.mp3")
      * @return FileUploadResponse с file_id
@@ -116,8 +117,7 @@ public class GigaChatClient {
 
             MultiValueMap<String, Object> parts = new LinkedMultiValueMap<>();
             parts.add("file", resource);
-            parts.add("purpose", "transcriptions"); // Обязательный параметр для распознавания речи
-            parts.add("model", "whisper"); // STT-модель GigaChat для распознавания речи
+            parts.add("purpose", "general"); // Обязательный параметр: позволяет использовать файл в запросах на генерацию ответов
 
             return webClientChat
                     .post()
@@ -136,11 +136,11 @@ public class GigaChatClient {
             if (e.getStatusCode().value() == 400 && responseBody != null) {
                 if (responseBody.contains("Purpose is not supported") || responseBody.contains("No purpose provided")) {
                     log.error("❌ ОШИБКА: Неправильный или отсутствующий параметр 'purpose'");
-                    log.error("✅ РЕШЕНИЕ: Используйте purpose='transcriptions' для распознавания речи");
+                    log.error("✅ РЕШЕНИЕ: Используйте purpose='general' для загрузки файлов в хранилище");
                 }
-                if (responseBody.contains("model") && responseBody.contains("not supported")) {
-                    log.error("❌ ОШИБКА: Неправильная модель");
-                    log.error("✅ РЕШЕНИЕ: Используйте model='whisper' для распознавания речи");
+                if (responseBody.contains("file size") || responseBody.contains("size limit")) {
+                    log.error("❌ ОШИБКА: Превышен размер файла");
+                    log.error("✅ РЕШЕНИЕ: Максимальный размер аудиофайла - 35 МБ");
                 }
             }
             
