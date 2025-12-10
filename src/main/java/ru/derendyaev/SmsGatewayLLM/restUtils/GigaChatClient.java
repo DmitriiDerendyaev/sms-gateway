@@ -116,7 +116,7 @@ public class GigaChatClient {
 
             MultiValueMap<String, Object> parts = new LinkedMultiValueMap<>();
             parts.add("file", resource);
-            parts.add("model_type", "audio/speech");
+            parts.add("purpose", "stt"); // Обязательный параметр: stt для распознавания речи (Speech To Text)
 
             return webClientChat
                     .post()
