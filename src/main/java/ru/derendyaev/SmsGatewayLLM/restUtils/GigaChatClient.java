@@ -116,7 +116,8 @@ public class GigaChatClient {
 
             MultiValueMap<String, Object> parts = new LinkedMultiValueMap<>();
             parts.add("file", resource);
-            parts.add("purpose", "stt"); // Обязательный параметр: stt для распознавания речи (Speech To Text)
+            parts.add("purpose", "transcriptions"); // Обязательный параметр для распознавания речи
+            parts.add("model", "whisper"); // STT-модель GigaChat для распознавания речи
 
             return webClientChat
                     .post()
@@ -128,7 +129,21 @@ public class GigaChatClient {
                     .bodyToMono(FileUploadResponse.class)
                     .block();
         } catch (WebClientResponseException e) {
-            log.error("Ошибка при загрузке файла в GigaChat: {} - {}", e.getStatusCode(), e.getResponseBodyAsString());
+            String responseBody = e.getResponseBodyAsString();
+            log.error("Ошибка при загрузке файла в GigaChat: {} - {}", e.getStatusCode(), responseBody);
+            
+            // Анализ ошибок и логирование рекомендаций
+            if (e.getStatusCode().value() == 400 && responseBody != null) {
+                if (responseBody.contains("Purpose is not supported") || responseBody.contains("No purpose provided")) {
+                    log.error("❌ ОШИБКА: Неправильный или отсутствующий параметр 'purpose'");
+                    log.error("✅ РЕШЕНИЕ: Используйте purpose='transcriptions' для распознавания речи");
+                }
+                if (responseBody.contains("model") && responseBody.contains("not supported")) {
+                    log.error("❌ ОШИБКА: Неправильная модель");
+                    log.error("✅ РЕШЕНИЕ: Используйте model='whisper' для распознавания речи");
+                }
+            }
+            
             throw e;
         }
     }
