@@ -17,7 +17,13 @@ import ru.derendyaev.SmsGatewayLLM.service.PaymentService;
 import ru.derendyaev.SmsGatewayLLM.service.SmsService;
 import ru.derendyaev.SmsGatewayLLM.service.UserService;
 import ru.derendyaev.SmsGatewayLLM.utils.PromptBuilder;
+import ru.derendyaev.SmsGatewayLLM.gigaChat.models.file.FileUploadResponse;
+import ru.derendyaev.SmsGatewayLLM.gigaChat.models.message.Message;
 
+import org.springframework.web.client.RestTemplate;
+
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
@@ -88,9 +94,29 @@ public class VkWebhookController {
             String text = (String) message.get("text");
             Object messageIdObj = message.get("id");
             String externalMessageId = messageIdObj != null ? messageIdObj.toString() : null;
+            Integer peerId = (Integer) message.get("peer_id");
 
             log.info("Сообщение из ВК: userId={}, text='{}', messageId={}", userId, text, externalMessageId);
             log.debug("Полное сообщение: {}", message);
+
+            // --- Обработка голосовых сообщений (ПЕРЕД обработкой текста) ---
+            @SuppressWarnings("unchecked")
+            List<Map<String, Object>> attachments = (List<Map<String, Object>>) message.get("attachments");
+            if (attachments != null && !attachments.isEmpty()) {
+                for (Map<String, Object> attachment : attachments) {
+                    String attachmentType = (String) attachment.get("type");
+                    if ("audio_message".equals(attachmentType)) {
+                        log.info("Обнаружено голосовое сообщение от пользователя {}", userId);
+                        try {
+                            handleAudioMessage(userId, peerId, attachment, externalMessageId);
+                        } catch (Exception e) {
+                            log.error("Ошибка при обработке голосового сообщения от пользователя {}: {}", userId, e.getMessage(), e);
+                            vkClient.sendMessage(userId, "❌ Ошибка при обработке голосового сообщения. Попробуйте еще раз." + FOOTER_INFO);
+                        }
+                        return ResponseEntity.ok("ok");
+                    }
+                }
+            }
 
             // --- Проверка на пустое сообщение ---
             if (text == null || text.trim().isEmpty()) {
@@ -283,5 +309,155 @@ public class VkWebhookController {
         }
 
         return ResponseEntity.ok("ok");
+    }
+
+    /**
+     * Обрабатывает голосовое сообщение от пользователя VK
+     * @param userId ID пользователя VK
+     * @param peerId peer_id из сообщения
+     * @param audioAttachment объект attachment с типом "audio_message"
+     * @param externalMessageId ID сообщения для дедупликации
+     */
+    private void handleAudioMessage(Integer userId, Integer peerId, Map<String, Object> audioAttachment, String externalMessageId) {
+        log.info("Начало обработки голосового сообщения от пользователя {}", userId);
+
+        // --- Проверяем регистрацию пользователя ---
+        Optional<UserEntity> userOpt = userService.getByVkId(userId);
+        if (userOpt.isEmpty()) {
+            log.warn("Пользователь {} не найден в базе данных", userId);
+            vkClient.sendMessage(userId,
+                    "❌ Ваш аккаунт не зарегистрирован.\n\n" +
+                            "Для регистрации отправьте команду /start и следуйте инструкциям.\n\n" +
+                            "Если у вас возникли проблемы, свяжитесь с администратором: " + ADMIN_CONTACT + FOOTER_INFO);
+            return;
+        }
+
+        UserEntity user = userOpt.get();
+
+        // --- Проверяем, что у пользователя есть привязанный номер телефона ---
+        if (user.getPhoneNumber() == null || user.getPhoneNumber().trim().isEmpty()) {
+            log.warn("У пользователя {} нет привязанного номера телефона", userId);
+            vkClient.sendMessage(userId,
+                    "❌ У вас нет привязанного номера телефона.\n\n" +
+                            "Для регистрации отправьте команду /start и введите ваш номер телефона.\n\n" +
+                            "Если у вас возникли проблемы, свяжитесь с администратором: " + ADMIN_CONTACT + FOOTER_INFO);
+            return;
+        }
+
+        int balance = user.getTokens();
+        log.info("Пользователь {} найден, номер телефона: {}, баланс токенов: {}", 
+                userId, user.getPhoneNumber(), balance);
+
+        // --- Проверяем баланс токенов ---
+        if (balance <= 0) {
+            log.warn("У пользователя {} недостаточно токенов (баланс: {})", userId, balance);
+            vkClient.sendMessage(userId,
+                    "⚠️ Недостаточно токенов.\n\n" +
+                            "Ваш текущий баланс: " + balance + " токенов.\n" +
+                            "Пополните баланс для продолжения работы.\n\n" +
+                            "Свяжитесь с администратором: " + ADMIN_CONTACT + FOOTER_INFO);
+            return;
+        }
+
+        // --- Извлекаем ссылку на аудиофайл ---
+        @SuppressWarnings("unchecked")
+        Map<String, Object> audioMessage = (Map<String, Object>) audioAttachment.get("audio_message");
+        if (audioMessage == null) {
+            log.error("Не удалось извлечь audio_message из attachment");
+            vkClient.sendMessage(userId, "❌ Ошибка: не удалось обработать голосовое сообщение." + FOOTER_INFO);
+            return;
+        }
+
+        String audioUrl = (String) audioMessage.get("link_mp3");
+        if (audioUrl == null || audioUrl.isEmpty()) {
+            audioUrl = (String) audioMessage.get("link_ogg");
+        }
+
+        if (audioUrl == null || audioUrl.isEmpty()) {
+            log.error("Не найдена ссылка на аудиофайл (ни link_mp3, ни link_ogg)");
+            vkClient.sendMessage(userId, "❌ Ошибка: не найдена ссылка на аудиофайл." + FOOTER_INFO);
+            return;
+        }
+
+        log.info("Ссылка на аудиофайл: {}", audioUrl);
+
+        // --- Скачиваем аудиофайл в память ---
+        byte[] audioBytes;
+        try {
+            log.info("Скачивание аудиофайла...");
+            RestTemplate restTemplate = new RestTemplate();
+            audioBytes = restTemplate.getForObject(audioUrl, byte[].class);
+            if (audioBytes == null || audioBytes.length == 0) {
+                throw new RuntimeException("Скачанный файл пуст");
+            }
+            log.info("Аудиофайл скачан, размер: {} bytes", audioBytes.length);
+        } catch (Exception e) {
+            log.error("Ошибка при скачивании аудиофайла: {}", e.getMessage(), e);
+            vkClient.sendMessage(userId, "❌ Ошибка при скачивании аудиофайла. Попробуйте еще раз." + FOOTER_INFO);
+            return;
+        }
+
+        // --- Загружаем файл в GigaChat ---
+        FileUploadResponse fileUploadResponse;
+        try {
+            log.info("Загрузка файла в GigaChat...");
+            String filename = audioUrl.contains(".mp3") ? "audio.mp3" : "audio.ogg";
+            fileUploadResponse = gigaChatClient.uploadFile(audioBytes, filename);
+            log.info("Файл загружен в GigaChat, file_id: {}", fileUploadResponse.getId());
+        } catch (Exception e) {
+            log.error("Ошибка при загрузке файла в GigaChat: {}", e.getMessage(), e);
+            vkClient.sendMessage(userId, "❌ Ошибка при загрузке файла в GigaChat. Попробуйте еще раз." + FOOTER_INFO);
+            return;
+        }
+
+        // --- Отправляем запрос на расшифровку в GigaChat ---
+        String fileId = fileUploadResponse.getId();
+        List<String> attachments = new ArrayList<>();
+        attachments.add(fileId);
+
+        Message userMessage = new Message("user", "Расшифруй голосовое сообщение", attachments);
+        List<Message> messages = new ArrayList<>();
+        messages.add(userMessage);
+
+        int maxTokens = Math.min(balance, 512);
+        log.info("Отправка запроса на расшифровку в GigaChat для пользователя {} (баланс: {}, max_tokens: {})", 
+                userId, balance, maxTokens);
+
+        GigaMessageRequest request = new GigaMessageRequest(
+                "GigaChat",
+                false,
+                0,
+                messages,
+                1,
+                maxTokens,
+                1.0
+        );
+
+        GigaMessageResponse response;
+        try {
+            response = gigaChatClient.gigaMessageGenerate(request);
+            log.info("Получен ответ от GigaChat для пользователя {}", userId);
+        } catch (Exception e) {
+            log.error("Ошибка при запросе к GigaChat для пользователя {}: {}", userId, e.getMessage(), e);
+            vkClient.sendMessage(userId,
+                    "❌ Ошибка LLM. Связь с админом: " + ADMIN_CONTACT + FOOTER_INFO);
+            return;
+        }
+
+        // --- Списание токенов ---
+        int used = response.getUsage() != null ? response.getUsage().getTotalTokens() : 1;
+        int newBalance = Math.max(balance - used, 0);
+        user.setTokens(newBalance);
+        userService.saveUser(user);
+        log.info("Списано токенов: {}, было: {}, остаток: {}", used, balance, newBalance);
+
+        // --- Формируем и отправляем ответ ---
+        String responseText = response.toString() + 
+                "\n\n💰 Потрачено токенов: " + used + 
+                "\n📊 Остаток токенов: " + newBalance +
+                FOOTER_INFO;
+
+        log.info("Отправка ответа пользователю {}", userId);
+        vkClient.sendMessage(userId, responseText);
     }
 }
