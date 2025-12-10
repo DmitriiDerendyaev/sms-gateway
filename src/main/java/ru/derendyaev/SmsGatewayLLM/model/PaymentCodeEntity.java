@@ -6,30 +6,29 @@ import lombok.*;
 import java.time.LocalDateTime;
 
 @Entity
-@Table(name = "users")
+@Table(name = "payment_codes")
 @Data
 @Builder
 @NoArgsConstructor
 @AllArgsConstructor
-public class UserEntity {
+public class PaymentCodeEntity {
 
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
 
-    @Column(unique = true)
-    private Long telegramId;
+    @Column(unique = true, nullable = false, length = 4)
+    private String code;
 
-    @Column(name = "vk_user_id")
+    @Column(name = "vk_user_id", nullable = false)
     private Integer vkUserId;
 
-    private String phoneNumber;
-
-    private String username;
-
     @Builder.Default
-    private Integer tokens = 0;
+    private Boolean isUsed = false;
 
     @Builder.Default
     private LocalDateTime createdAt = LocalDateTime.now();
+
+    private LocalDateTime usedAt;
 }
+

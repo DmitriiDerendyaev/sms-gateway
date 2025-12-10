@@ -6,6 +6,7 @@ on:
       - main
       - feature/checkToken
       - feature/vk
+      - feature/add-payment
 
 jobs:
   # =============================

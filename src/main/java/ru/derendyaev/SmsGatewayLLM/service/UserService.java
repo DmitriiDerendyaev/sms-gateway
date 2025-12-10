@@ -1,6 +1,7 @@
 package ru.derendyaev.SmsGatewayLLM.service;
 
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import ru.derendyaev.SmsGatewayLLM.model.PromoCodeEntity;
@@ -8,9 +9,11 @@ import ru.derendyaev.SmsGatewayLLM.model.UserEntity;
 import ru.derendyaev.SmsGatewayLLM.repository.PromoCodeRepository;
 import ru.derendyaev.SmsGatewayLLM.repository.UserRepository;
 
+import java.time.LocalDateTime;
 import java.util.Optional;
 import java.util.UUID;
 
+@Slf4j
 @Service
 @RequiredArgsConstructor
 public class UserService {
@@ -61,6 +64,53 @@ public class UserService {
 
         // Берем последние 10 цифр
         return digits.substring(digits.length() - 10);
+    }
+
+    /**
+     * Регистрация или обновление VK пользователя с номером телефона.
+     * Если пользователя с таким телефоном нет - создаёт нового.
+     * Если есть - добавляет VK User ID к существующему пользователю.
+     * 
+     * @param vkUserId VK User ID
+     * @param username Имя пользователя (может быть null)
+     * @param rawPhone Номер телефона в любом формате
+     * @return Сообщение о результате регистрации
+     */
+    @Transactional
+    public String registerVkUserWithPhone(Integer vkUserId, String username, String rawPhone) {
+        String phone = normalizePhoneNumber(rawPhone);
+        if (phone == null) {
+            return "❌ Некорректный номер телефона. Пожалуйста, введите номер в формате: +7XXXXXXXXXX или 8XXXXXXXXXX";
+        }
+
+        // Ищем пользователя по номеру телефона
+        Optional<UserEntity> userByPhoneOpt = userRepository.findByPhoneNumber(phone);
+
+        if (userByPhoneOpt.isEmpty()) {
+            // Пользователя с таким телефоном нет - создаём нового
+            UserEntity newUser = UserEntity.builder()
+                    .vkUserId(vkUserId)
+                    .phoneNumber(phone)
+                    .username(username != null ? username : "vk_" + vkUserId)
+                    .tokens(5000) // Начальный бонус при регистрации
+                    .createdAt(LocalDateTime.now())
+                    .build();
+            userRepository.save(newUser);
+            log.info("Создан новый VK пользователь: vkUserId={}, phone={}, username={}, tokens=5000", vkUserId, phone, username);
+            return "✅ Регистрация успешна! Ваш номер телефона: 8" + phone +
+                   "\n\n💰 Вам начислено 5000 токенов в подарок!" +
+                   "\n\nТеперь вы можете использовать бота для взаимодействия с нейросетью.";
+        } else {
+            // Пользователь с таким телефоном уже есть - добавляем только VK User ID
+            UserEntity existingUser = userByPhoneOpt.get();
+            existingUser.setVkUserId(vkUserId);
+            // username не изменяем, оставляем существующий
+            userRepository.save(existingUser);
+            log.info("Обновлён существующий пользователь: добавлен vkUserId={} для phone={}, username остался прежним: {}", 
+                    vkUserId, phone, existingUser.getUsername());
+            return "✅ Ваш VK аккаунт успешно привязан к номеру телефона: +" + phone + 
+                   "\n\nТеперь вы можете использовать бота для взаимодействия с нейросетью.";
+        }
     }
 
 
@@ -186,6 +236,46 @@ public class UserService {
 
         // Телефона нет в базе — ошибка
         return "❌ Указанный номер не найден среди зарегистрированных пользователей.";
+    }
+
+    /**
+     * Активация промокода для VK пользователя по VK User ID.
+     * Начисляет токены пользователю, если промокод валиден.
+     * 
+     * @param vkUserId VK User ID
+     * @param promoCode Код промокода
+     * @return Сообщение о результате активации
+     */
+    @Transactional
+    public String activatePromoForVkUser(Integer vkUserId, String promoCode) {
+        // Проверяем наличие промокода
+        Optional<PromoCodeEntity> promoOpt = promoCodeRepository.findByCode(promoCode);
+        if (promoOpt.isEmpty() || promoOpt.get().getIsUsed()) {
+            return "❌ Промокод не найден или уже использован.";
+        }
+        PromoCodeEntity promo = promoOpt.get();
+
+        // Ищем пользователя по VK ID
+        Optional<UserEntity> userOpt = userRepository.findByVkUserId(vkUserId);
+        if (userOpt.isEmpty()) {
+            return "❌ Пользователь не найден. Пожалуйста, сначала зарегистрируйтесь командой /start.";
+        }
+
+        UserEntity user = userOpt.get();
+        
+        // Начисляем токены
+        user.setTokens(user.getTokens() + promo.getTokenAmount());
+        userRepository.save(user);
+
+        // Помечаем промокод как использованный
+        promo.setIsUsed(true);
+        promoCodeRepository.save(promo);
+
+        log.info("Промокод {} активирован для VK пользователя {}: начислено {} токенов, баланс: {}", 
+                promoCode, vkUserId, promo.getTokenAmount(), user.getTokens());
+
+        return "✅ Промокод активирован!\n💰 Начислено " + promo.getTokenAmount() + 
+               " токенов.\n📊 Текущий баланс: " + user.getTokens() + " токенов.";
     }
 
 }
