@@ -74,19 +74,49 @@ public class GigaChatClient {
         messageHeaders.put("X-Request-ID", Collections.singletonList(getUUID()));
         messageHeaders.setBearerAuth(getToken().getAccessToken());
 
-        log.info("Запрос к GigaChat: {}", request);
+        log.info("Запрос к GigaChat: model={}, messages_count={}", 
+                request.getModel(), request.getMessages() != null ? request.getMessages().size() : 0);
+        log.debug("Полный запрос к GigaChat: {}", request);
 
         try {
-            return webClientChat
+            GigaMessageResponse response = webClientChat
                     .post()
                     .uri("/api/v1/chat/completions")
                     .headers(httpHeaders -> httpHeaders.addAll(messageHeaders))
                     .bodyValue(request)
                     .retrieve()
-                    .bodyToMono(GigaMessageResponse.class).log()
+                    .bodyToMono(GigaMessageResponse.class)
                     .block();
+            
+            log.info("✅ Успешный ответ от GigaChat");
+            if (response.getUsage() != null) {
+                log.debug("Использовано токенов: {}", response.getUsage().getTotalTokens());
+            }
+            return response;
         } catch (WebClientResponseException e) {
-            log.error("Ошибка GigaChat: {} - {}", e.getStatusCode(), e.getResponseBodyAsString());
+            String responseBody = e.getResponseBodyAsString();
+            int statusCode = e.getStatusCode().value();
+            log.error("❌ Ошибка GigaChat: {} - {}", statusCode, responseBody);
+            
+            // Специальная обработка ошибки 422
+            if (statusCode == 422) {
+                log.error("⚠️ ОШИБКА 422 (Unprocessable Entity) - проблема валидации запроса");
+                if (responseBody != null) {
+                    if (responseBody.contains("model") || responseBody.contains("Model")) {
+                        log.error("✅ РЕШЕНИЕ: Проверьте название модели. Для работы с аудио используйте 'GigaChat-preview'");
+                    }
+                    if (responseBody.contains("attachments") || responseBody.contains("file")) {
+                        log.error("✅ РЕШЕНИЕ: Проверьте структуру attachments. Должен быть массив строк с file_id");
+                    }
+                    if (responseBody.contains("size") || responseBody.contains("limit")) {
+                        log.error("✅ РЕШЕНИЕ: Превышен размер файла или контекста. Максимум аудио: 35 МБ");
+                    }
+                    if (responseBody.contains("context") || responseBody.contains("window")) {
+                        log.error("✅ РЕШЕНИЕ: Превышен размер контекста модели. Попробуйте более короткое аудио");
+                    }
+                }
+            }
+            
             throw e;
         }
     }

@@ -383,6 +383,7 @@ public class VkWebhookController {
 
         // --- Скачиваем аудиофайл в память ---
         byte[] audioBytes;
+        String filename;
         try {
             log.info("Скачивание аудиофайла...");
             RestTemplate restTemplate = new RestTemplate();
@@ -390,7 +391,39 @@ public class VkWebhookController {
             if (audioBytes == null || audioBytes.length == 0) {
                 throw new RuntimeException("Скачанный файл пуст");
             }
-            log.info("Аудиофайл скачан, размер: {} bytes", audioBytes.length);
+            log.info("Аудиофайл скачан, размер: {} bytes ({} МБ)", audioBytes.length, audioBytes.length / (1024.0 * 1024.0));
+            
+            // --- Валидация размера файла (максимум 35 МБ для аудио) ---
+            long maxSizeBytes = 35L * 1024 * 1024; // 35 МБ
+            if (audioBytes.length > maxSizeBytes) {
+                log.error("Превышен максимальный размер аудиофайла: {} bytes (максимум: {} bytes)", audioBytes.length, maxSizeBytes);
+                vkClient.sendMessage(userId, 
+                        "❌ Размер аудиофайла слишком большой (максимум 35 МБ).\n" +
+                        "Попробуйте отправить более короткое голосовое сообщение." + FOOTER_INFO);
+                return;
+            }
+            
+            // --- Определение формата файла из URL ---
+            String urlLower = audioUrl.toLowerCase();
+            if (urlLower.contains(".mp3")) {
+                filename = "audio.mp3";
+            } else if (urlLower.contains(".m4a")) {
+                filename = "audio.m4a";
+            } else if (urlLower.contains(".wav")) {
+                filename = "audio.wav";
+            } else if (urlLower.contains(".ogg")) {
+                filename = "audio.ogg";
+            } else if (urlLower.contains(".opus")) {
+                filename = "audio.opus";
+            } else if (urlLower.contains(".webm") || urlLower.contains(".weba")) {
+                filename = "audio.webm";
+            } else {
+                // По умолчанию используем ogg, так как VK часто использует этот формат
+                filename = "audio.ogg";
+                log.warn("Формат файла не определен из URL, используется ogg по умолчанию: {}", audioUrl);
+            }
+            log.info("Определен формат файла: {}", filename);
+            
         } catch (Exception e) {
             log.error("Ошибка при скачивании аудиофайла: {}", e.getMessage(), e);
             vkClient.sendMessage(userId, "❌ Ошибка при скачивании аудиофайла. Попробуйте еще раз." + FOOTER_INFO);
@@ -399,14 +432,22 @@ public class VkWebhookController {
 
         // --- Загружаем файл в GigaChat ---
         FileUploadResponse fileUploadResponse;
+        
         try {
-            log.info("Загрузка файла в GigaChat...");
-            String filename = audioUrl.contains(".mp3") ? "audio.mp3" : "audio.ogg";
+            log.info("Загрузка файла в GigaChat: filename={}, size={} bytes", filename, audioBytes.length);
             fileUploadResponse = gigaChatClient.uploadFile(audioBytes, filename);
-            log.info("Файл загружен в GigaChat, file_id: {}", fileUploadResponse.getId());
+            log.info("✅ Файл успешно загружен в GigaChat, file_id: {}", fileUploadResponse.getId());
         } catch (Exception e) {
-            log.error("Ошибка при загрузке файла в GigaChat: {}", e.getMessage(), e);
-            vkClient.sendMessage(userId, "❌ Ошибка при загрузке файла в GigaChat. Попробуйте еще раз." + FOOTER_INFO);
+            log.error("❌ Ошибка при загрузке файла в GigaChat: {}", e.getMessage(), e);
+            String errorMessage = "❌ Ошибка при загрузке файла в GigaChat.";
+            if (e.getMessage() != null && e.getMessage().contains("422")) {
+                errorMessage += "\n\nВозможные причины:\n" +
+                        "• Неподдерживаемый формат файла\n" +
+                        "• Превышен размер файла (максимум 35 МБ)\n" +
+                        "• Проблема с форматом данных";
+            }
+            errorMessage += "\n\nПопробуйте еще раз или свяжитесь с администратором: " + ADMIN_CONTACT + FOOTER_INFO;
+            vkClient.sendMessage(userId, errorMessage);
             return;
         }
 
@@ -423,8 +464,11 @@ public class VkWebhookController {
         log.info("Отправка запроса на расшифровку в GigaChat для пользователя {} (баланс: {}, max_tokens: {})", 
                 userId, balance, maxTokens);
 
+        // Используем модель с поддержкой мультимодальности для работы с аудио
+        String modelName = "GigaChat-preview"; // Модель с поддержкой работы с файлами
+        
         GigaMessageRequest request = new GigaMessageRequest(
-                "GigaChat",
+                modelName,
                 false,
                 0,
                 messages,
@@ -433,14 +477,33 @@ public class VkWebhookController {
                 1.0
         );
 
+        log.info("Запрос на распознавание: model={}, file_id={}, max_tokens={}", 
+                modelName, fileId, maxTokens);
+        log.debug("Полный запрос: {}", request);
+
         GigaMessageResponse response;
         try {
             response = gigaChatClient.gigaMessageGenerate(request);
-            log.info("Получен ответ от GigaChat для пользователя {}", userId);
+            log.info("✅ Получен ответ от GigaChat для пользователя {}", userId);
+            if (response.getChoices() != null && !response.getChoices().isEmpty()) {
+                log.debug("Текст распознавания: {}", response.getChoices().get(0).getMessage().getContent());
+            }
         } catch (Exception e) {
-            log.error("Ошибка при запросе к GigaChat для пользователя {}: {}", userId, e.getMessage(), e);
-            vkClient.sendMessage(userId,
-                    "❌ Ошибка LLM. Связь с админом: " + ADMIN_CONTACT + FOOTER_INFO);
+            log.error("❌ Ошибка при запросе к GigaChat для пользователя {}: {}", userId, e.getMessage(), e);
+            String errorMessage = "❌ Ошибка при распознавании голосового сообщения.";
+            
+            // Специальная обработка ошибки 422
+            if (e.getMessage() != null && e.getMessage().contains("422")) {
+                errorMessage += "\n\nВозможные причины:\n" +
+                        "• Модель не поддерживает работу с аудиофайлами\n" +
+                        "• Превышен размер контекста модели\n" +
+                        "• Некорректная структура запроса\n" +
+                        "• Файл не был корректно загружен";
+                log.error("⚠️ Ошибка 422 (Unprocessable Entity) - проблема валидации запроса");
+            }
+            
+            errorMessage += "\n\nСвязь с админом: " + ADMIN_CONTACT + FOOTER_INFO;
+            vkClient.sendMessage(userId, errorMessage);
             return;
         }
 
