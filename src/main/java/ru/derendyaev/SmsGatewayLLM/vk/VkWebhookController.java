@@ -107,6 +107,17 @@ public class VkWebhookController {
                     String attachmentType = (String) attachment.get("type");
                     if ("audio_message".equals(attachmentType)) {
                         log.info("Обнаружено голосовое сообщение от пользователя {}", userId);
+                        
+                        // --- Дедупликация для голосовых сообщений ---
+                        // Используем специальный маркер "AUDIO_MESSAGE" как текст и messageId для дедупликации
+                        String audioMessageText = "AUDIO_MESSAGE";
+                        String userIdStr = String.valueOf(userId);
+                        if (deduplicationService.isDuplicate(audioMessageText, userIdStr, externalMessageId)) {
+                            log.info("Голосовое сообщение от пользователя {} с messageId {} уже обработано, пропускаем", userId, externalMessageId);
+                            return ResponseEntity.ok("ok");
+                        }
+                        deduplicationService.registerMessage(audioMessageText, userIdStr, externalMessageId);
+                        
                         try {
                             handleAudioMessage(userId, peerId, attachment, externalMessageId);
                         } catch (Exception e) {
@@ -458,11 +469,10 @@ public class VkWebhookController {
 
         // Системный промпт для работы с аудио (оптимизирован для экономии токенов)
         // Сокращенная версия: убраны повторы и лишние слова, сохранен смысл
-        // Исходный: "твоя задача внимательно слушать что говорит пользователь внимательно изучает ситуацию которую обозначают не нарушает никакие законы отвечать четко грамотно и ясно"
         String audioSystemPrompt = "Внимательно слушай, анализируй ситуацию, соблюдай законы, отвечай четко и грамотно";
         Message systemMessage = new Message("system", audioSystemPrompt);
         
-        Message userMessage = new Message("user", "Расшифруй голосовое сообщение", attachments);
+        Message userMessage = new Message("user", "Распознай текст, Помоги пользователю в решении его задачи. Не переспрашивай пользователя, пытайся ответить сам", attachments);
         List<Message> messages = new ArrayList<>();
         messages.add(systemMessage);
         messages.add(userMessage);
