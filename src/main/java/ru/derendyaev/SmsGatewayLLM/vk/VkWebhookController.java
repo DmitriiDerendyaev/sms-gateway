@@ -465,7 +465,7 @@ public class VkWebhookController {
                 userId, balance, maxTokens);
 
         // Используем модель с поддержкой мультимодальности для работы с аудио
-        String modelName = "GigaChat-preview"; // Модель с поддержкой работы с файлами
+        String modelName = "GigaChat-Pro"; // Модель с поддержкой работы с файлами
         
         GigaMessageRequest request = new GigaMessageRequest(
                 modelName,
