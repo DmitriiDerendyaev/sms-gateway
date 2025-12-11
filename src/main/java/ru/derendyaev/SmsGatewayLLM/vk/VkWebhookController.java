@@ -456,8 +456,15 @@ public class VkWebhookController {
         List<String> attachments = new ArrayList<>();
         attachments.add(fileId);
 
+        // Системный промпт для работы с аудио (оптимизирован для экономии токенов)
+        // Сокращенная версия: убраны повторы и лишние слова, сохранен смысл
+        // Исходный: "твоя задача внимательно слушать что говорит пользователь внимательно изучает ситуацию которую обозначают не нарушает никакие законы отвечать четко грамотно и ясно"
+        String audioSystemPrompt = "Внимательно слушай, анализируй ситуацию, соблюдай законы, отвечай четко и грамотно";
+        Message systemMessage = new Message("system", audioSystemPrompt);
+        
         Message userMessage = new Message("user", "Расшифруй голосовое сообщение", attachments);
         List<Message> messages = new ArrayList<>();
+        messages.add(systemMessage);
         messages.add(userMessage);
 
         int maxTokens = Math.min(balance, 512);
