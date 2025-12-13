@@ -125,6 +125,28 @@ public class VkWebhookController {
                             vkClient.sendMessage(userId, "❌ Ошибка при обработке голосового сообщения. Попробуйте еще раз." + FOOTER_INFO);
                         }
                         return ResponseEntity.ok("ok");
+                    } else if ("photo".equals(attachmentType)) {
+                        log.info("Обнаружено фото от пользователя {}", userId);
+
+                        String dedupText = "PHOTO_MESSAGE";
+                        String userIdStr = String.valueOf(userId);
+
+                        if (deduplicationService.isDuplicate(dedupText, userIdStr, externalMessageId)) {
+                            log.info("Фото от пользователя {} уже обработано", userId);
+                            return ResponseEntity.ok("ok");
+                        }
+                        deduplicationService.registerMessage(dedupText, userIdStr, externalMessageId);
+
+                        try {
+                            handlePhotoMessage(userId, peerId, attachment, text);
+                        } catch (Exception e) {
+                            log.error("Ошибка обработки фото", e);
+                            vkClient.sendMessage(
+                                    userId,
+                                    "❌ Ошибка при обработке изображения. Попробуйте ещё раз." + FOOTER_INFO
+                            );
+                        }
+                        return ResponseEntity.ok("ok");
                     }
                 }
             }
@@ -321,6 +343,140 @@ public class VkWebhookController {
 
         return ResponseEntity.ok("ok");
     }
+
+    private void handlePhotoMessage(
+            Integer userId,
+            Integer peerId,
+            Map<String, Object> photoAttachment,
+            String userText
+    ) {
+        log.info("Начало обработки фото от пользователя {}", userId);
+
+        // --- Проверка пользователя ---
+        Optional<UserEntity> userOpt = userService.getByVkId(userId);
+        if (userOpt.isEmpty()) {
+            vkClient.sendMessage(
+                    userId,
+                    "❌ Вы не зарегистрированы.\n\nВведите /start" + FOOTER_INFO
+            );
+            return;
+        }
+
+        UserEntity user = userOpt.get();
+        int balance = user.getTokens();
+
+        if (balance <= 0) {
+            vkClient.sendMessage(
+                    userId,
+                    "⚠️ Недостаточно токенов." + FOOTER_INFO
+            );
+            return;
+        }
+
+        // --- Извлечение photo ---
+        @SuppressWarnings("unchecked")
+        Map<String, Object> photo = (Map<String, Object>) photoAttachment.get("photo");
+        if (photo == null) {
+            throw new RuntimeException("photo == null");
+        }
+
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> sizes =
+                (List<Map<String, Object>>) photo.get("sizes");
+
+        if (sizes == null || sizes.isEmpty()) {
+            throw new RuntimeException("sizes пуст");
+        }
+
+        // --- Берём СРЕДНЮЮ по размеру (медиану) ---
+        sizes.sort((a, b) -> {
+            int aSize = (int) a.get("width") * (int) a.get("height");
+            int bSize = (int) b.get("width") * (int) b.get("height");
+            return Integer.compare(aSize, bSize);
+        });
+
+        Map<String, Object> mediumSize = sizes.get(sizes.size() / 2);
+        String imageUrl = (String) mediumSize.get("url");
+
+        log.info("Выбрана средняя картинка: {}", imageUrl);
+
+        // --- Скачивание изображения ---
+        RestTemplate restTemplate = new RestTemplate();
+        byte[] imageBytes = restTemplate.getForObject(imageUrl, byte[].class);
+
+        if (imageBytes == null || imageBytes.length == 0) {
+            throw new RuntimeException("Изображение пустое");
+        }
+
+        long maxSize = 35L * 1024 * 1024;
+        if (imageBytes.length > maxSize) {
+            vkClient.sendMessage(
+                    userId,
+                    "❌ Размер изображения превышает 35 МБ." + FOOTER_INFO
+            );
+            return;
+        }
+
+        String filename = "image.jpg";
+
+        // --- Загрузка в GigaChat ---
+        FileUploadResponse uploadResponse =
+                gigaChatClient.uploadFile(imageBytes, filename);
+
+        String fileId = uploadResponse.getId();
+        log.info("Фото загружено в GigaChat, file_id={}", fileId);
+
+        // --- Формирование сообщений ---
+        List<String> attachments = List.of(fileId);
+
+        Message systemMessage = new Message(
+                "system",
+                "Ты анализируешь изображение и текст пользователя. Отвечай чётко и полезно."
+        );
+
+        String finalUserText =
+                (userText == null || userText.isBlank())
+                        ? "Проанализируй изображение"
+                        : userText;
+
+        Message userMessage = new Message(
+                "user",
+                finalUserText,
+                attachments
+        );
+
+        List<Message> messages = List.of(systemMessage, userMessage);
+
+        int maxTokens = Math.min(balance, 512);
+
+        GigaMessageRequest request = new GigaMessageRequest(
+                "GigaChat-Pro",
+                false,
+                0,
+                messages,
+                1,
+                maxTokens,
+                1.0
+        );
+
+        // --- Запрос в GigaChat ---
+        GigaMessageResponse response = gigaChatClient.gigaMessageGenerate(request);
+
+        int used = response.getUsage() != null
+                ? response.getUsage().getTotalTokens()
+                : 1;
+
+        user.setTokens(Math.max(balance - used, 0));
+        userService.saveUser(user);
+
+        String responseText = response.toString() +
+                "\n\n💰 Потрачено токенов: " + used +
+                "\n📊 Остаток токенов: " + user.getTokens() +
+                FOOTER_INFO;
+
+        vkClient.sendMessage(userId, responseText);
+    }
+
 
     /**
      * Обрабатывает голосовое сообщение от пользователя VK

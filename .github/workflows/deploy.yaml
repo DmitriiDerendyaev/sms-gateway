@@ -8,6 +8,7 @@ on:
       - feature/vk
       - feature/add-payment
       - feature/add-voice-recognition
+      - feature/add-image-recognition
 
 jobs:
   # =============================
