@@ -23,6 +23,7 @@ import ru.derendyaev.SmsGatewayLLM.gigaChat.models.file.FileUploadResponse;
 import ru.derendyaev.SmsGatewayLLM.gigaChat.models.message.Message;
 
 import org.springframework.web.client.RestTemplate;
+import com.fasterxml.jackson.databind.ObjectMapper;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -67,6 +68,9 @@ public class VkWebhookController {
     
     // Константы для кнопок
     private static final String BUTTON_CREATE_EVENT = "create_event_button";
+    private static final String BUTTON_TEXT_CREATE_EVENT = "📅 Создать напоминание";
+    
+    private final ObjectMapper objectMapper = new ObjectMapper();
 
     // Префикс /llm больше не обязателен - все сообщения обрабатываются
     // private static final String LLM_PREFIX = "/llm";
@@ -177,25 +181,65 @@ public class VkWebhookController {
             String userMessage = text.trim();
             log.debug("Обработанное сообщение: '{}' (длина: {})", userMessage, userMessage.length());
 
-            // --- Обработка кнопок (payload) ---
-            @SuppressWarnings("unchecked")
-            Map<String, Object> payloadObj = (Map<String, Object>) message.get("payload");
+            // --- Обработка кнопок (payload и текст кнопки) ---
+            Object payloadObj = message.get("payload");
             if (payloadObj != null) {
-                String payload = payloadObj.toString();
-                log.info("Получен payload от пользователя {}: {}", userId, payload);
-                
-                if (payload.contains(BUTTON_CREATE_EVENT)) {
-                    log.info("Пользователь {} нажал кнопку создания события", userId);
-                    handleCreateEventButton(userId);
-                    return ResponseEntity.ok("ok");
+                try {
+                    String payloadStr;
+                    if (payloadObj instanceof String) {
+                        payloadStr = (String) payloadObj;
+                    } else if (payloadObj instanceof Map) {
+                        payloadStr = objectMapper.writeValueAsString(payloadObj);
+                    } else {
+                        payloadStr = payloadObj.toString();
+                    }
+                    
+                    log.info("Получен payload от пользователя {}: {}", userId, payloadStr);
+                    
+                    // Парсим JSON payload
+                    if (payloadStr.contains(BUTTON_CREATE_EVENT) || payloadStr.contains("\"button\":\"" + BUTTON_CREATE_EVENT + "\"")) {
+                        log.info("Пользователь {} нажал кнопку создания события через payload", userId);
+                        handleCreateEventButton(userId);
+                        return ResponseEntity.ok("ok");
+                    }
+                } catch (Exception e) {
+                    log.warn("Ошибка при обработке payload от пользователя {}: {}", userId, e.getMessage());
                 }
+            }
+            
+            // Обработка текста кнопки (если пользователь просто отправил текст кнопки)
+            if (BUTTON_TEXT_CREATE_EVENT.equals(userMessage)) {
+                log.info("Пользователь {} отправил текст кнопки создания события", userId);
+                handleCreateEventButton(userId);
+                return ResponseEntity.ok("ok");
             }
 
             // --- Обработка команды /start (ПЕРЕД дедупликацией, чтобы команда всегда обрабатывалась) ---
             if ("/start".equalsIgnoreCase(userMessage) || "Начать".equalsIgnoreCase(userMessage)) {
                 log.info("Получена команда /start от пользователя {}", userId);
-                vkUserStates.put(userId, STATE_WAITING_PHONE);
-                vkClient.sendMessage(userId, WELCOME_MESSAGE + FOOTER_INFO, createKeyboardJson());
+                
+                // Проверяем, зарегистрирован ли пользователь
+                Optional<UserEntity> existingUserOpt = userService.getByVkId(userId);
+                if (existingUserOpt.isPresent()) {
+                    // Пользователь уже зарегистрирован - показываем краткую информацию
+                    UserEntity user = existingUserOpt.get();
+                    String infoMessage = "👋 С возвращением!\n\n" +
+                            "🤖 Вы уже зарегистрированы в SmsGateway LLM.\n\n" +
+                            "📊 Ваш баланс токенов: " + user.getTokens() + "\n\n" +
+                            "💡 Доступные возможности:\n" +
+                            "• Общение с нейросетью (просто отправьте сообщение)\n" +
+                            "• Создание напоминаний в Google Calendar (кнопка ниже)\n" +
+                            "• Активация промокодов: /promo <код>\n" +
+                            "• Покупка токенов: /buy\n\n" +
+                            "📅 Используйте кнопку ниже для создания напоминания!";
+                    
+                    vkClient.sendMessage(userId, infoMessage + FOOTER_INFO, createKeyboardJson());
+                    vkUserStates.put(userId, STATE_IDLE);
+                } else {
+                    // Новый пользователь - регистрация
+                    vkUserStates.put(userId, STATE_WAITING_PHONE);
+                    vkClient.sendMessage(userId, WELCOME_MESSAGE + FOOTER_INFO, createKeyboardJson());
+                }
                 // Не регистрируем команду в дедупликации, чтобы её можно было использовать повторно
                 return ResponseEntity.ok("ok");
             }
@@ -222,7 +266,7 @@ public class VkWebhookController {
 
                 // Активируем промокод
                 String result = userService.activatePromoForVkUser(userId, promoCode);
-                vkClient.sendMessage(userId, result + FOOTER_INFO);
+                vkClient.sendMessage(userId, result + FOOTER_INFO, createKeyboardJson());
                 // Не регистрируем в дедупликации, чтобы можно было повторить с другим промокодом
                 return ResponseEntity.ok("ok");
             }
@@ -253,7 +297,7 @@ public class VkWebhookController {
                         "Обратите внимание, что обработка платежа занимает до 10 минут.\n\n" +
                         "⏱️ Код действителен в течение 24 часов.";
                 
-                vkClient.sendMessage(userId, buyMessage + FOOTER_INFO);
+                vkClient.sendMessage(userId, buyMessage + FOOTER_INFO, createKeyboardJson());
                 // Не регистрируем в дедупликации, чтобы можно было повторить покупку
                 return ResponseEntity.ok("ok");
             }
@@ -264,6 +308,21 @@ public class VkWebhookController {
                 
                 if (STATE_WAITING_PHONE.equals(state)) {
                     log.info("Пользователь {} в состоянии WAITING_PHONE, обрабатываем номер телефона", userId);
+                    
+                    // Проверяем, не зарегистрирован ли уже пользователь
+                    Optional<UserEntity> existingUserOpt = userService.getByVkId(userId);
+                    if (existingUserOpt.isPresent() && existingUserOpt.get().getPhoneNumber() != null 
+                            && !existingUserOpt.get().getPhoneNumber().trim().isEmpty()) {
+                        // Пользователь уже зарегистрирован
+                        log.info("Пользователь {} уже зарегистрирован, переводим в IDLE", userId);
+                        vkUserStates.put(userId, STATE_IDLE);
+                        vkClient.sendMessage(userId,
+                                "✅ Вы уже зарегистрированы!\n\n" +
+                                "Используйте кнопку ниже для создания напоминания или отправьте сообщение для общения с нейросетью." + FOOTER_INFO,
+                                createKeyboardJson());
+                        return ResponseEntity.ok("ok");
+                    }
+                    
                     // Получаем username из сообщения (если доступно) или используем VK User ID
                     String username = null; // VK API не передаёт username напрямую в webhook
                     
@@ -297,7 +356,8 @@ public class VkWebhookController {
                 vkClient.sendMessage(userId,
                         "❌ Ваш аккаунт не зарегистрирован.\n\n" +
                                 "Для регистрации отправьте команду /start и следуйте инструкциям.\n\n" +
-                                "Если у вас возникли проблемы, свяжитесь с администратором: " + ADMIN_CONTACT + FOOTER_INFO);
+                                "Если у вас возникли проблемы, свяжитесь с администратором: " + ADMIN_CONTACT + FOOTER_INFO,
+                        createKeyboardJson());
                 return ResponseEntity.ok("ok");
             }
 
@@ -309,7 +369,8 @@ public class VkWebhookController {
                 vkClient.sendMessage(userId,
                         "❌ У вас нет привязанного номера телефона.\n\n" +
                                 "Для регистрации отправьте команду /start и введите ваш номер телефона.\n\n" +
-                                "Если у вас возникли проблемы, свяжитесь с администратором: " + ADMIN_CONTACT + FOOTER_INFO);
+                                "Если у вас возникли проблемы, свяжитесь с администратором: " + ADMIN_CONTACT + FOOTER_INFO,
+                        createKeyboardJson());
                 return ResponseEntity.ok("ok");
             }
 
@@ -324,7 +385,8 @@ public class VkWebhookController {
                         "⚠️ Недостаточно токенов.\n\n" +
                                 "Ваш текущий баланс: " + balance + " токенов.\n" +
                                 "Пополните баланс для продолжения работы.\n\n" +
-                                "Свяжитесь с администратором: " + ADMIN_CONTACT + FOOTER_INFO);
+                                "Свяжитесь с администратором: " + ADMIN_CONTACT + FOOTER_INFO,
+                        createKeyboardJson());
                 return ResponseEntity.ok("ok");
             }
 
@@ -352,7 +414,8 @@ public class VkWebhookController {
             } catch (Exception e) {
                 log.error("Ошибка при запросе к GigaChat для пользователя {}: {}", userId, e.getMessage(), e);
                 vkClient.sendMessage(userId,
-                        "❌ Ошибка LLM. Связь с админом: " + ADMIN_CONTACT + FOOTER_INFO);
+                        "❌ Ошибка LLM. Связь с админом: " + ADMIN_CONTACT + FOOTER_INFO,
+                        createKeyboardJson());
                 return ResponseEntity.ok("ok");
             }
 
@@ -370,7 +433,7 @@ public class VkWebhookController {
                     FOOTER_INFO;
             
             log.info("Отправка ответа пользователю {}", userId);
-            vkClient.sendMessage(userId, responseText);
+            vkClient.sendMessage(userId, responseText, createKeyboardJson());
 
             return ResponseEntity.ok("ok");
         }
