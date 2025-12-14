@@ -92,8 +92,7 @@ public class VkWebhookController {
     // Информация для всех сообщений
     private static final String FOOTER_INFO = "\n\n" +
             "━━━━━━━━━━━━━━━━━━━━━━\n" +
-            "👤 Администратор: " + ADMIN_CONTACT + "\n" +
-            "⚠️ Внимание: Сервис скоро станет платным";
+            "🤖 AiTag - ИИ-помощник";
     
     // Приветственное сообщение для команды /start
     private static final String WELCOME_MESSAGE = "👋 Привет! Добро пожаловать в SmsGateway LLM!\n\n" +
@@ -912,7 +911,8 @@ public class VkWebhookController {
 
                 if (validatedJson != null) {
                     // Создаем событие напрямую, без дополнительного парсинга
-                    String result = googleCalendarService.createEvent(userOpt.get(), validatedJson);
+                    // used содержит количество токенов, потраченных на транскрибирование
+                    String result = googleCalendarService.createEvent(userOpt.get(), validatedJson, used);
                     vkClient.sendMessage(userId, result + FOOTER_INFO, createKeyboardJson());
 
                     // Возвращаем пользователя в состояние IDLE
@@ -1258,7 +1258,9 @@ public class VkWebhookController {
             }
 
             // Создаём событие в Google Calendar
-            String result = googleCalendarService.createEvent(user, eventJson);
+            // Для текстовых сообщений токены уже списаны в parseTextToEventJson, но точное количество неизвестно
+            // Передаем 0 как placeholder, можно улучшить учет в будущем
+            String result = googleCalendarService.createEvent(user, eventJson, 0);
             
             // Отправляем результат пользователю
             vkClient.sendMessage(userId, result + FOOTER_INFO, createKeyboardJson());

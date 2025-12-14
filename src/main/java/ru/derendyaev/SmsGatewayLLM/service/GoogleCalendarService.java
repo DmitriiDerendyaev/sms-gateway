@@ -196,13 +196,14 @@ public class GoogleCalendarService {
 
     /**
      * Создаёт событие в Google Calendar из JSON-строки.
-     * 
+     *
      * @param user Пользователь
      * @param eventJson JSON-строка с данными события
+     * @param tokensUsed Количество токенов, потраченных на создание события
      * @return Результат создания события (ID события или сообщение об ошибке)
      */
     @Transactional
-    public String createEvent(UserEntity user, String eventJson) {
+    public String createEvent(UserEntity user, String eventJson, int tokensUsed) {
         log.info("Создание события в Google Calendar для пользователя {}: {}", user.getId(), eventJson);
 
         // Проверяем авторизацию
@@ -350,9 +351,14 @@ public class GoogleCalendarService {
             calendarEventRepository.save(calendarEvent);
             log.info("Событие сохранено в БД: {}", calendarEvent.getId());
 
+            // Получаем текущий баланс токенов пользователя
+            int currentTokenBalance = user.getTokens();
+            int previousBalance = currentTokenBalance + tokensUsed;
+
             return "✅ Событие успешно создано в Google Calendar!\n\n" +
                    "📅 " + (event.getSummary() != null ? event.getSummary() : "Без названия") + "\n" +
                    "🕐 " + startTimeStr + (startTimeStr.equals(endTimeStr) ? "" : " - " + endTimeStr) + "\n" +
+                   "💰 Потрачено токенов: " + tokensUsed + " | Остаток: " + currentTokenBalance + "\n" +
                    "🔗 ID: " + googleEventId;
 
         } catch (IOException e) {
