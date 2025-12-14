@@ -32,4 +32,17 @@ public class UserEntity {
 
     @Builder.Default
     private LocalDateTime createdAt = LocalDateTime.now();
+
+    /**
+     * Смещение часового пояса пользователя от UTC в часах
+     * Допустимые значения: от -12 до +14
+     */
+    @Column(name = "timezone_offset")
+    private Integer timezoneOffset;
+
+    /**
+     * Дата и время установки часового пояса пользователя
+     */
+    @Column(name = "timezone_set_at")
+    private LocalDateTime timezoneSetAt;
 }

@@ -12,6 +12,7 @@ import ru.derendyaev.SmsGatewayLLM.repository.UserRepository;
 import java.time.LocalDateTime;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.regex.Pattern;
 
 @Slf4j
 @Service
@@ -274,8 +275,70 @@ public class UserService {
         log.info("Промокод {} активирован для VK пользователя {}: начислено {} токенов, баланс: {}", 
                 promoCode, vkUserId, promo.getTokenAmount(), user.getTokens());
 
-        return "✅ Промокод активирован!\n💰 Начислено " + promo.getTokenAmount() + 
+        return "✅ Промокод активирован!\n💰 Начислено " + promo.getTokenAmount() +
                " токенов.\n📊 Текущий баланс: " + user.getTokens() + " токенов.";
+    }
+
+    // ===================== Часовые пояса =====================
+
+    /**
+     * Проверяет, установлен ли часовой пояс у пользователя
+     */
+    public boolean hasTimezone(UserEntity user) {
+        return user.getTimezoneOffset() != null;
+    }
+
+    /**
+     * Устанавливает часовой пояс для пользователя
+     */
+    @Transactional
+    public void setTimezone(UserEntity user, Integer timezoneOffset) {
+        if (timezoneOffset < -12 || timezoneOffset > 14) {
+            throw new IllegalArgumentException("Смещение часового пояса должно быть в диапазоне от -12 до +14 часов");
+        }
+
+        user.setTimezoneOffset(timezoneOffset);
+        user.setTimezoneSetAt(LocalDateTime.now());
+        userRepository.save(user);
+
+        log.info("Установлен часовой пояс для пользователя {}: UTC{:+d}", user.getVkUserId(), timezoneOffset);
+    }
+
+    /**
+     * Получает смещение часового пояса пользователя в часах
+     * Возвращает null, если часовой пояс не установлен
+     */
+    public Integer getTimezoneOffset(UserEntity user) {
+        return user.getTimezoneOffset();
+    }
+
+    /**
+     * Парсит строку с часовым поясом и возвращает смещение от UTC
+     * Поддерживаемые форматы: "+2", "+3", "-5", "+4"
+     */
+    public Integer parseTimezoneOffset(String timezoneStr) {
+        if (timezoneStr == null || timezoneStr.trim().isEmpty()) {
+            return null;
+        }
+
+        String trimmed = timezoneStr.trim();
+
+        // Паттерн для форматов типа "+2", "-5"
+        Pattern pattern = Pattern.compile("^([+-])(\\d+)$");
+        var matcher = pattern.matcher(trimmed);
+
+        if (matcher.matches()) {
+            String sign = matcher.group(1);
+            int hours = Integer.parseInt(matcher.group(2));
+
+            if (hours < 0 || hours > 14) {
+                return null; // Недопустимое значение часов
+            }
+
+            return sign.equals("+") ? hours : -hours;
+        }
+
+        return null; // Не удалось распарсить
     }
 
 }

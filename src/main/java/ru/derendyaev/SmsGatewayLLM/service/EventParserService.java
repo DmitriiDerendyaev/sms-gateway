@@ -32,19 +32,41 @@ public class EventParserService {
 
     /**
      * Парсит текст пользователя в JSON-формат для Google Calendar.
-     * 
+     * Использует UTC время (для обратной совместимости).
+     *
      * @param userText Текст пользователя с описанием события
      * @return JSON-строка с данными события или null в случае ошибки
      */
     public String parseTextToEventJson(String userText) {
+        return parseTextToEventJson(userText, null);
+    }
+
+    /**
+     * Парсит текст пользователя в JSON-формат для Google Calendar.
+     *
+     * @param userText Текст пользователя с описанием события
+     * @param timezoneOffset Смещение часового пояса пользователя от UTC в часах (может быть null)
+     * @return JSON-строка с данными события или null в случае ошибки
+     */
+    public String parseTextToEventJson(String userText, Integer timezoneOffset) {
         log.info("Начало парсинга текста в JSON для события: {}", userText);
 
         try {
-            // Получаем текущее время в UTC для промпта
+            // Получаем текущее время в UTC
             ZonedDateTime nowUtc = ZonedDateTime.now(ZoneId.of("UTC"));
-            String currentDateTime = nowUtc.format(DateTimeFormatter.ISO_INSTANT);
-            String currentDate = nowUtc.format(DateTimeFormatter.ofPattern("yyyy-MM-dd"));
-            String currentTime = nowUtc.format(DateTimeFormatter.ofPattern("HH:mm"));
+
+            // Если timezoneOffset указан, рассчитываем локальное время пользователя
+            ZonedDateTime userLocalTime = (timezoneOffset != null) ?
+                    nowUtc.plusHours(timezoneOffset) : nowUtc;
+
+            String currentDateTime = userLocalTime.format(DateTimeFormatter.ISO_INSTANT);
+            String currentDate = userLocalTime.format(DateTimeFormatter.ofPattern("yyyy-MM-dd"));
+            String currentTime = userLocalTime.format(DateTimeFormatter.ofPattern("HH:mm"));
+
+            // Указываем в промпте, что время локальное для пользователя
+            String timezoneNote = (timezoneOffset != null) ?
+                    " (локальное время пользователя UTC" + (timezoneOffset >= 0 ? "+" : "") + timezoneOffset + ")" :
+                    " (UTC)";
             
             // Формируем улучшенный промпт для GigaChat
             String systemPrompt = "Ты - помощник для создания событий в Google Calendar. " +
@@ -69,8 +91,8 @@ public class EventParserService {
                     "  }\n" +
                     "}\n\n" +
                     "КРИТИЧЕСКИ ВАЖНО - ПАРСИНГ ВРЕМЕНИ:\n" +
-                    "1. ТЕКУЩАЯ ДАТА И ВРЕМЯ (UTC): " + currentDateTime + "\n" +
-                    "   Сегодня: " + currentDate + ", время: " + currentTime + " UTC\n\n" +
+                    "1. ТЕКУЩАЯ ДАТА И ВРЕМЯ" + timezoneNote + ": " + currentDateTime + "\n" +
+                    "   Сегодня: " + currentDate + ", время: " + currentTime + timezoneNote.replace(" (", "").replace(")", "") + "\n\n" +
                     "2. ОТНОСИТЕЛЬНОЕ ВРЕМЯ (от текущего момента):\n" +
                     "   - 'через 1 час' = текущее время + 1 час (СЕГОДНЯ, та же дата)\n" +
                     "   - 'через 2 часа' = текущее время + 2 часа (СЕГОДНЯ, та же дата)\n" +
@@ -101,10 +123,10 @@ public class EventParserService {
                     "   - Поля attendees и reminders могут быть пустыми массивами\n\n" +
                     "6. ПРИМЕРЫ:\n" +
                     "   Вход: 'Запустить пылесос через 1 час, добавь описание, чтобы было чисто'\n" +
-                    "   Выход: {\"summary\":\"Запустить пылесос\",\"description\":\"Чтобы было чисто\",\"start\":{\"dateTime\":\"" + 
-                    nowUtc.plusHours(1).format(DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss'Z'")) + 
-                    "\",\"timeZone\":\"UTC\"},\"end\":{\"dateTime\":\"" + 
-                    nowUtc.plusHours(2).format(DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss'Z'")) + 
+                    "   Выход: {\"summary\":\"Запустить пылесос\",\"description\":\"Чтобы было чисто\",\"start\":{\"dateTime\":\"" +
+                    userLocalTime.plusHours(1).format(DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss'Z'")) +
+                    "\",\"timeZone\":\"UTC\"},\"end\":{\"dateTime\":\"" +
+                    userLocalTime.plusHours(2).format(DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss'Z'")) +
                     "\",\"timeZone\":\"UTC\"},\"attendees\":[],\"reminders\":{\"useDefault\":false,\"overrides\":[]}}\n\n" +
                     "7. ВЕРНИ ТОЛЬКО JSON, без markdown, без комментариев, без дополнительного текста!";
 

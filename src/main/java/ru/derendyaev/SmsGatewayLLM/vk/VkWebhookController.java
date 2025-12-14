@@ -74,9 +74,13 @@ public class VkWebhookController {
     private static final String STATE_IDLE = "IDLE";
     private static final String STATE_WAITING_PHONE = "WAITING_PHONE";
     private static final String STATE_CREATING_EVENT = "CREATING_EVENT";
-    
+    private static final String STATE_WAITING_TIMEZONE = "WAITING_TIMEZONE";
+
     // Константы для кнопок
     private static final String BUTTON_CREATE_EVENT = "create_event_button";
+    private static final String BUTTON_TIMEZONE_PLUS_2 = "timezone_plus_2";
+    private static final String BUTTON_TIMEZONE_PLUS_3 = "timezone_plus_3";
+    private static final String BUTTON_TIMEZONE_PLUS_4 = "timezone_plus_4";
     private static final String BUTTON_TEXT_CREATE_EVENT = "📅 Создать напоминание";
     
     private final ObjectMapper objectMapper = new ObjectMapper();
@@ -218,6 +222,23 @@ public class VkWebhookController {
                         handleCreateEventButton(userId);
                         return ResponseEntity.ok("ok");
                     }
+
+                    // Обработка кнопок выбора часового пояса
+                    if (payloadStr.contains(BUTTON_TIMEZONE_PLUS_2) || payloadStr.contains("\"button\":\"" + BUTTON_TIMEZONE_PLUS_2 + "\"")) {
+                        log.info("Пользователь {} выбрал timezone +2 через payload", userId);
+                        handleTimezoneSelection(userId, BUTTON_TIMEZONE_PLUS_2);
+                        return ResponseEntity.ok("ok");
+                    }
+                    if (payloadStr.contains(BUTTON_TIMEZONE_PLUS_3) || payloadStr.contains("\"button\":\"" + BUTTON_TIMEZONE_PLUS_3 + "\"")) {
+                        log.info("Пользователь {} выбрал timezone +3 через payload", userId);
+                        handleTimezoneSelection(userId, BUTTON_TIMEZONE_PLUS_3);
+                        return ResponseEntity.ok("ok");
+                    }
+                    if (payloadStr.contains(BUTTON_TIMEZONE_PLUS_4) || payloadStr.contains("\"button\":\"" + BUTTON_TIMEZONE_PLUS_4 + "\"")) {
+                        log.info("Пользователь {} выбрал timezone +4 через payload", userId);
+                        handleTimezoneSelection(userId, BUTTON_TIMEZONE_PLUS_4);
+                        return ResponseEntity.ok("ok");
+                    }
                 } catch (Exception e) {
                     log.warn("Ошибка при обработке payload от пользователя {}: {}", userId, e.getMessage());
                 }
@@ -348,6 +369,10 @@ public class VkWebhookController {
                     vkUserStates.put(userId, STATE_IDLE);
                     log.info("Пользователь {} зарегистрирован с телефоном", userId);
                     // Не регистрируем в дедупликации, так как это одноразовое действие
+                    return ResponseEntity.ok("ok");
+                } else if (STATE_WAITING_TIMEZONE.equals(state)) {
+                    log.info("Пользователь {} в состоянии WAITING_TIMEZONE, обрабатываем ввод timezone", userId);
+                    handleManualTimezoneInput(userId, userMessage);
                     return ResponseEntity.ok("ok");
                 } else if (STATE_CREATING_EVENT.equals(state)) {
                     log.info("Пользователь {} в состоянии CREATING_EVENT, обрабатываем описание события", userId);
@@ -738,9 +763,26 @@ public class VkWebhookController {
 
         // Получаем текущее время для промпта
         ZonedDateTime nowUtc = ZonedDateTime.now(ZoneId.of("UTC"));
-        String currentDateTime = nowUtc.format(DateTimeFormatter.ISO_INSTANT);
-        String currentDate = nowUtc.format(DateTimeFormatter.ofPattern("yyyy-MM-dd"));
-        String currentTime = nowUtc.format(DateTimeFormatter.ofPattern("HH:mm"));
+
+        // Получаем timezone пользователя для локального времени
+        Optional<UserEntity> userOptTime = userService.getByVkId(userId);
+        Integer timezoneOffset = null;
+        ZonedDateTime userLocalTime = nowUtc;
+
+        if (userOptTime.isPresent()) {
+            timezoneOffset = userService.getTimezoneOffset(userOptTime.get());
+            if (timezoneOffset != null) {
+                userLocalTime = nowUtc.plusHours(timezoneOffset);
+            }
+        }
+
+        String currentDateTime = userLocalTime.format(DateTimeFormatter.ISO_INSTANT);
+        String currentDate = userLocalTime.format(DateTimeFormatter.ofPattern("yyyy-MM-dd"));
+        String currentTime = userLocalTime.format(DateTimeFormatter.ofPattern("HH:mm"));
+
+        String timezoneNote = (timezoneOffset != null) ?
+                " (локальное время пользователя UTC" + (timezoneOffset >= 0 ? "+" : "") + timezoneOffset + ")" :
+                " (UTC)";
 
         // Определяем промпт в зависимости от состояния пользователя
         String state = vkUserStates.get(userId);
@@ -753,9 +795,9 @@ public class VkWebhookController {
                     "Пользователь отправил голосовое сообщение с описанием события. " +
                     "Твоя задача - РАСПОЗНАТЬ текст из голосового сообщения и вернуть ТОЛЬКО описание события в текстовом формате, " +
                     "подходящем для создания напоминания в календаре.\n\n" +
-                    "КРИТИЧЕСКИ ВАЖНО - ТЕКУЩЕЕ ВРЕМЯ:\n" +
+                    "КРИТИЧЕСКИ ВАЖНО - ТЕКУЩЕЕ ВРЕМЯ" + timezoneNote + ":\n" +
                     "Сейчас: " + currentDateTime + "\n" +
-                    "Сегодня: " + currentDate + ", время: " + currentTime + " UTC\n\n" +
+                    "Сегодня: " + currentDate + ", время: " + currentTime + timezoneNote.replace(" (", "").replace(")", "") + "\n\n" +
                     "ПРАВИЛА:\n" +
                     "- Верни ТОЛЬКО текст описания события\n" +
                     "- Не добавляй лишние комментарии или вопросы\n" +
@@ -763,7 +805,6 @@ public class VkWebhookController {
                     "- Просто верни то, что пользователь сказал голосом\n" +
                     "- Учитывай, что относительное время ('через 1 час', 'завтра') рассчитывается от ТЕКУЩЕГО момента\n\n" +
                     "ПРИМЕРЫ:\n" +
-                    "Сейчас: 2024-12-14T15:30:00Z\n" +
                     "Пользователь говорит: \"Создать напоминание через 1 час\"\n" +
                     "Ты отвечаешь: \"Создать напоминание через 1 час\"\n\n" +
                     "Пользователь говорит: \"Встреча с командой завтра в 10 часов\"\n" +
@@ -869,12 +910,25 @@ public class VkWebhookController {
 
     /**
      * Создаёт JSON-строку с клавиатурой VK для кнопки "Создать напоминание".
-     * 
+     *
      * @return JSON-строка с клавиатурой
      */
     private String createKeyboardJson() {
         // Формат клавиатуры VK API v5.199
         return "{\"one_time\":false,\"buttons\":[[{\"action\":{\"type\":\"text\",\"label\":\"📅 Создать напоминание\",\"payload\":\"{\\\"button\\\":\\\"" + BUTTON_CREATE_EVENT + "\\\"}\"},\"color\":\"primary\"}]]}";
+    }
+
+    /**
+     * Создаёт JSON-строку с клавиатурой VK для выбора часового пояса.
+     *
+     * @return JSON-строка с клавиатурой выбора timezone
+     */
+    private String createTimezoneKeyboardJson() {
+        // Формат клавиатуры VK API v5.199 с кнопками выбора часового пояса
+        return "{\"one_time\":false,\"buttons\":[" +
+                "[{\"action\":{\"type\":\"text\",\"label\":\"➕2 часа\",\"payload\":\"{\\\"button\\\":\\\"" + BUTTON_TIMEZONE_PLUS_2 + "\\\"}\"},\"color\":\"primary\"}," +
+                "{\"action\":{\"type\":\"text\",\"label\":\"➕3 часа\",\"payload\":\"{\\\"button\\\":\\\"" + BUTTON_TIMEZONE_PLUS_3 + "\\\"}\"},\"color\":\"primary\"}," +
+                "{\"action\":{\"type\":\"text\",\"label\":\"➕4 часа\",\"payload\":\"{\\\"button\\\":\\\"" + BUTTON_TIMEZONE_PLUS_4 + "\\\"}\"},\"color\":\"primary\"}]]}";
     }
 
     /**
@@ -884,10 +938,10 @@ public class VkWebhookController {
      */
     private void handleCreateEventButton(Integer userId) {
         log.info("Обработка нажатия кнопки создания события для пользователя {}", userId);
-        
+
         // Проверяем регистрацию пользователя
-        Optional<UserEntity> userOpt = userService.getByVkId(userId);
-        if (userOpt.isEmpty()) {
+        Optional<UserEntity> userOptTime = userService.getByVkId(userId);
+        if (userOptTime.isEmpty()) {
             vkClient.sendMessage(userId,
                     "❌ Вы не зарегистрированы.\n\n" +
                     "Для регистрации отправьте команду /start и следуйте инструкциям." + FOOTER_INFO,
@@ -895,14 +949,21 @@ public class VkWebhookController {
             return;
         }
 
-        UserEntity user = userOpt.get();
-        
+        UserEntity user = userOptTime.get();
+
+        // Проверяем, установлен ли часовой пояс
+        if (!userService.hasTimezone(user)) {
+            log.info("Часовой пояс не установлен для пользователя {}, запрашиваем выбор", userId);
+            requestTimezoneSelection(userId);
+            return;
+        }
+
         // Проверяем Google-авторизацию
         if (!googleCalendarService.hasValidAuth(user.getId())) {
             // Формируем URL для авторизации
-            String authUrl = String.format("%s://%s/oauth/google/authorize?vkUserId=%d", 
+            String authUrl = String.format("%s://%s/oauth/google/authorize?vkUserId=%d",
                     serverProtocol, serverHost, userId);
-            
+
             vkClient.sendMessage(userId,
                     "🔐 Требуется авторизация Google\n\n" +
                     "Для создания событий в Google Calendar необходимо авторизоваться через Google.\n\n" +
@@ -915,7 +976,7 @@ public class VkWebhookController {
 
         // Переводим пользователя в состояние создания события
         vkUserStates.put(userId, STATE_CREATING_EVENT);
-        
+
         String message = "📅 Создание напоминания\n\n" +
                 "Опишите событие, которое вы хотите создать в Google Calendar.\n\n" +
                 "Примеры:\n" +
@@ -923,8 +984,146 @@ public class VkWebhookController {
                 "• Собеседование 25 декабря в 15:30\n" +
                 "• Позвонить маме через 2 часа\n\n" +
                 "Вы можете отправить текст или голосовое сообщение.";
-        
+
         vkClient.sendMessage(userId, message + FOOTER_INFO, createKeyboardJson());
+    }
+
+    /**
+     * Запрашивает выбор часового пояса у пользователя
+     */
+    private void requestTimezoneSelection(Integer userId) {
+        vkUserStates.put(userId, STATE_WAITING_TIMEZONE);
+
+        String message = "🌍 Выбор часового пояса\n\n" +
+                "Для корректного создания напоминаний необходимо указать ваш часовой пояс.\n" +
+                "Выберите смещение от UTC или введите вручную (например: +3 или -5).\n\n" +
+                "Часовой пояс устанавливается один раз и используется для всех напоминаний.";
+
+        vkClient.sendMessage(userId, message + FOOTER_INFO, createTimezoneKeyboardJson());
+    }
+
+    /**
+     * Обрабатывает выбор часового пояса через кнопки
+     */
+    private void handleTimezoneSelection(Integer userId, String buttonPayload) {
+        log.info("Обработка выбора часового пояса для пользователя {}: {}", userId, buttonPayload);
+
+        Integer timezoneOffset = null;
+        switch (buttonPayload) {
+            case BUTTON_TIMEZONE_PLUS_2:
+                timezoneOffset = 2;
+                break;
+            case BUTTON_TIMEZONE_PLUS_3:
+                timezoneOffset = 3;
+                break;
+            case BUTTON_TIMEZONE_PLUS_4:
+                timezoneOffset = 4;
+                break;
+            default:
+                log.warn("Неизвестная кнопка timezone для пользователя {}: {}", userId, buttonPayload);
+                vkClient.sendMessage(userId, "❌ Неизвестная кнопка. Попробуйте еще раз." + FOOTER_INFO, createKeyboardJson());
+                return;
+        }
+
+        // Сохраняем timezone и переводим в состояние создания события
+        Optional<UserEntity> userOptTime = userService.getByVkId(userId);
+        if (userOptTime.isPresent()) {
+            UserEntity user = userOptTime.get();
+            try {
+                userService.setTimezone(user, timezoneOffset);
+
+                vkClient.sendMessage(userId,
+                        "✅ Часовой пояс установлен: UTC" + (timezoneOffset >= 0 ? "+" : "") + timezoneOffset + "\n\n" +
+                        "Теперь вы можете создавать напоминания!" + FOOTER_INFO,
+                        createKeyboardJson());
+
+                // Переходим к созданию события
+                proceedToEventCreation(userId);
+            } catch (IllegalArgumentException e) {
+                log.error("Ошибка установки timezone для пользователя {}: {}", userId, e.getMessage());
+                vkClient.sendMessage(userId, "❌ Ошибка установки часового пояса. Попробуйте еще раз." + FOOTER_INFO, createKeyboardJson());
+            }
+        }
+    }
+
+    /**
+     * Обрабатывает ручной ввод часового пояса
+     */
+    private void handleManualTimezoneInput(Integer userId, String timezoneText) {
+        log.info("Обработка ручного ввода timezone для пользователя {}: {}", userId, timezoneText);
+
+        Integer timezoneOffset = userService.parseTimezoneOffset(timezoneText.trim());
+
+        if (timezoneOffset == null) {
+            vkClient.sendMessage(userId,
+                    "❌ Некорректный формат часового пояса.\n\n" +
+                    "Используйте формат: +2, +3, -5, +4\n" +
+                    "Или выберите из предложенных кнопок." + FOOTER_INFO,
+                    createTimezoneKeyboardJson());
+            return;
+        }
+
+        // Сохраняем timezone
+        Optional<UserEntity> userOptTime = userService.getByVkId(userId);
+        if (userOptTime.isPresent()) {
+            UserEntity user = userOptTime.get();
+            try {
+                userService.setTimezone(user, timezoneOffset);
+
+                vkClient.sendMessage(userId,
+                        "✅ Часовой пояс установлен: UTC" + (timezoneOffset >= 0 ? "+" : "") + timezoneOffset + "\n\n" +
+                        "Теперь вы можете создавать напоминания!" + FOOTER_INFO,
+                        createKeyboardJson());
+
+                // Переходим к созданию события
+                proceedToEventCreation(userId);
+            } catch (IllegalArgumentException e) {
+                vkClient.sendMessage(userId,
+                        "❌ Ошибка установки часового пояса. Попробуйте еще раз." + FOOTER_INFO,
+                        createTimezoneKeyboardJson());
+            }
+        }
+    }
+
+    /**
+     * Продолжает процесс создания события после установки timezone
+     */
+    private void proceedToEventCreation(Integer userId) {
+        log.info("Продолжение создания события для пользователя {} после установки timezone", userId);
+
+        // Проверяем Google-авторизацию
+        Optional<UserEntity> userOptTime = userService.getByVkId(userId);
+        if (userOptTime.isPresent()) {
+            UserEntity user = userOptTime.get();
+
+            if (!googleCalendarService.hasValidAuth(user.getId())) {
+                // Формируем URL для авторизации
+                String authUrl = String.format("%s://%s/oauth/google/authorize?vkUserId=%d",
+                        serverProtocol, serverHost, userId);
+
+                vkClient.sendMessage(userId,
+                        "🔐 Требуется авторизация Google\n\n" +
+                        "Для создания событий в Google Calendar необходимо авторизоваться через Google.\n\n" +
+                        "📎 Перейдите по ссылке для авторизации:\n" +
+                        authUrl + "\n\n" +
+                        "После авторизации вы сможете создавать напоминания в Google Calendar.",
+                        createKeyboardJson());
+                return;
+            }
+
+            // Переводим пользователя в состояние создания события
+            vkUserStates.put(userId, STATE_CREATING_EVENT);
+
+            String message = "📅 Создание напоминания\n\n" +
+                    "Опишите событие, которое вы хотите создать в Google Calendar.\n\n" +
+                    "Примеры:\n" +
+                    "• Встреча с командой завтра в 10:00\n" +
+                    "• Собеседование 25 декабря в 15:30\n" +
+                    "• Позвонить маме через 2 часа\n\n" +
+                    "Вы можете отправить текст или голосовое сообщение.";
+
+            vkClient.sendMessage(userId, message + FOOTER_INFO, createKeyboardJson());
+        }
     }
 
     /**
@@ -948,8 +1147,8 @@ public class VkWebhookController {
         }
         
         // Проверяем регистрацию пользователя
-        Optional<UserEntity> userOpt = userService.getByVkId(userId);
-        if (userOpt.isEmpty()) {
+        Optional<UserEntity> userOptTime = userService.getByVkId(userId);
+        if (userOptTime.isEmpty()) {
             vkClient.sendMessage(userId,
                     "❌ Вы не зарегистрированы.\n\n" +
                     "Для регистрации отправьте команду /start и следуйте инструкциям." + FOOTER_INFO,
@@ -958,7 +1157,7 @@ public class VkWebhookController {
             return ResponseEntity.ok("ok");
         }
 
-        UserEntity user = userOpt.get();
+        UserEntity user = userOptTime.get();
         
         // Проверяем баланс токенов
         int balance = user.getTokens();
@@ -991,9 +1190,10 @@ public class VkWebhookController {
         }
 
         try {
-            // Парсим текст в JSON для Google Calendar
+            // Парсим текст в JSON для Google Calendar с учетом timezone пользователя
             log.info("Парсинг текста в JSON для события: {}", userText);
-            String eventJson = eventParserService.parseTextToEventJson(userText);
+            Integer timezoneOffset = userService.getTimezoneOffset(user);
+            String eventJson = eventParserService.parseTextToEventJson(userText, timezoneOffset);
             
             if (eventJson == null) {
                 log.error("Не удалось распарсить текст в JSON для события");
