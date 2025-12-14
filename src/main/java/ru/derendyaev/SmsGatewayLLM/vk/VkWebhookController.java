@@ -28,6 +28,9 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.time.ZoneId;
+import java.time.ZonedDateTime;
+import java.time.format.DateTimeFormatter;
 import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -733,29 +736,40 @@ public class VkWebhookController {
         List<String> attachments = new ArrayList<>();
         attachments.add(fileId);
 
+        // Получаем текущее время для промпта
+        ZonedDateTime nowUtc = ZonedDateTime.now(ZoneId.of("UTC"));
+        String currentDateTime = nowUtc.format(DateTimeFormatter.ISO_INSTANT);
+        String currentDate = nowUtc.format(DateTimeFormatter.ofPattern("yyyy-MM-dd"));
+        String currentTime = nowUtc.format(DateTimeFormatter.ofPattern("HH:mm"));
+
         // Определяем промпт в зависимости от состояния пользователя
         String state = vkUserStates.get(userId);
         String audioSystemPrompt;
         String audioUserPrompt;
 
         if (STATE_CREATING_EVENT.equals(state)) {
-            // Специальный промпт для создания событий календаря
+            // Специальный промпт для создания событий календаря с текущим временем
             audioSystemPrompt = "Ты - помощник для создания событий в Google Calendar. " +
                     "Пользователь отправил голосовое сообщение с описанием события. " +
                     "Твоя задача - РАСПОЗНАТЬ текст из голосового сообщения и вернуть ТОЛЬКО описание события в текстовом формате, " +
                     "подходящем для создания напоминания в календаре.\n\n" +
+                    "КРИТИЧЕСКИ ВАЖНО - ТЕКУЩЕЕ ВРЕМЯ:\n" +
+                    "Сейчас: " + currentDateTime + "\n" +
+                    "Сегодня: " + currentDate + ", время: " + currentTime + " UTC\n\n" +
                     "ПРАВИЛА:\n" +
                     "- Верни ТОЛЬКО текст описания события\n" +
                     "- Не добавляй лишние комментарии или вопросы\n" +
                     "- Не пытайся создать JSON или структурировать данные\n" +
-                    "- Просто верни то, что пользователь сказал голосом\n\n" +
+                    "- Просто верни то, что пользователь сказал голосом\n" +
+                    "- Учитывай, что относительное время ('через 1 час', 'завтра') рассчитывается от ТЕКУЩЕГО момента\n\n" +
                     "ПРИМЕРЫ:\n" +
-                    "Пользователь говорит: \"Создать напоминание на завтра в 10 часов\"\n" +
-                    "Ты отвечаешь: \"Создать напоминание на завтра в 10 часов\"\n\n" +
-                    "Пользователь говорит: \"Встреча с командой через 2 часа\"\n" +
-                    "Ты отвечаешь: \"Встреча с командой через 2 часа\"";
+                    "Сейчас: 2024-12-14T15:30:00Z\n" +
+                    "Пользователь говорит: \"Создать напоминание через 1 час\"\n" +
+                    "Ты отвечаешь: \"Создать напоминание через 1 час\"\n\n" +
+                    "Пользователь говорит: \"Встреча с командой завтра в 10 часов\"\n" +
+                    "Ты отвечаешь: \"Встреча с командой завтра в 10 часов\"";
 
-            audioUserPrompt = "Распознай текст голосового сообщения и верни только описание события для календаря.";
+            audioUserPrompt = "Распознай текст голосового сообщения и верни только описание события для календаря. Текущее время: " + currentDateTime;
         } else {
             // Обычный промпт для общего общения
             audioSystemPrompt = "Внимательно слушай, анализируй ситуацию, соблюдай законы, отвечай четко и грамотно";
