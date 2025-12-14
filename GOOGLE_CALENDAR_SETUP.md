@@ -48,23 +48,47 @@ app:
       client-secret: "ваш-client-secret"
 ```
 
-### Шаг 3: Авторизация пользователей
+### Шаг 3: Настройка Redirect URI
 
-Для авторизации пользователей через Google OAuth необходимо:
+В Google Cloud Console добавьте Authorized redirect URIs:
+- **Для продакшена**: `https://derendyaev.ru/oauth/google/callback`
 
-1. Создать endpoint для OAuth callback (например, `/oauth/google/callback`)
-2. Использовать метод `GoogleCalendarService.saveAuth()` для сохранения токенов
-3. Обработать OAuth flow согласно документации Google OAuth 2.0
+⚠️ **ВАЖНО**: Добавьте ТОЧНО этот URI, иначе авторизация не будет работать
 
-Пример обработки OAuth callback:
-```java
-@GetMapping("/oauth/google/callback")
-public String handleGoogleCallback(@RequestParam String code, @RequestParam Long userId) {
-    // Обмен code на access_token и refresh_token
-    // Сохранение через googleCalendarService.saveAuth(userId, accessToken, refreshToken, expiresIn)
-    return "redirect:/success";
-}
+### Шаг 4: Настройка application.yaml
+
+В файле `src/main/resources/application.yaml` уже настроены значения по умолчанию для продакшена:
+```yaml
+app:
+  values:
+    google:
+      client-id: ${APP__VALUES__GOOGLE__CLIENT__ID:}
+      client-secret: ${APP__VALUES__GOOGLE__CLIENT__SECRET:}
+      redirect-uri: ${APP__VALUES__GOOGLE__REDIRECT__URI:https://derendyaev.ru/oauth/google/callback}
+      server-host: ${APP__VALUES__GOOGLE__SERVER__HOST:derendyaev.ru}
+      server-protocol: ${APP__VALUES__GOOGLE__SERVER__PROTOCOL:https}
 ```
+
+**Ничего менять не нужно** - значения будут браться из переменных окружения при деплое.
+
+📖 **Подробная инструкция**: См. файл `PRODUCTION_SETUP.md`
+
+### Шаг 5: Авторизация пользователей
+
+Система автоматически обрабатывает OAuth flow:
+
+1. **Пользователь нажимает кнопку "Создать напоминание"**
+2. **Если не авторизован** - получает ссылку на авторизацию в VK
+3. **Переходит по ссылке** - открывается страница авторизации Google
+4. **Авторизуется в Google** - выбирает аккаунт и разрешает доступ
+5. **Google перенаправляет на callback** - система обменивает код на токены
+6. **Токены сохраняются в БД** - автоматически через `GoogleCalendarService.saveAuth()`
+7. **Показывается страница успеха** - пользователь может закрыть окно
+8. **Пользователь может создавать события** - авторизация завершена
+
+**Endpoints:**
+- `/oauth/google/authorize?vkUserId={id}` - инициация авторизации
+- `/oauth/google/callback` - обработка callback от Google
 
 ## Использование
 

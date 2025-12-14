@@ -52,6 +52,12 @@ public class VkWebhookController {
     @Value("${app.values.vk.access-token}")
     private String accessToken;
 
+    @Value("${app.values.google.server-host:derendyaev.ru}")
+    private String serverHost;
+    
+    @Value("${app.values.google.server-protocol:https}")
+    private String serverProtocol;
+
     private final VkClient vkClient; // создадим ниже
 
     // Хранение состояний пользователей VK
@@ -836,10 +842,16 @@ public class VkWebhookController {
         
         // Проверяем Google-авторизацию
         if (!googleCalendarService.hasValidAuth(user.getId())) {
+            // Формируем URL для авторизации
+            String authUrl = String.format("%s://%s/oauth/google/authorize?vkUserId=%d", 
+                    serverProtocol, serverHost, userId);
+            
             vkClient.sendMessage(userId,
-                    "❌ Google-авторизация отсутствует или недействительна.\n\n" +
-                    "Для создания событий в Google Calendar необходимо пройти авторизацию через Google OAuth.\n\n" +
-                    "Свяжитесь с администратором: " + ADMIN_CONTACT + FOOTER_INFO,
+                    "🔐 Требуется авторизация Google\n\n" +
+                    "Для создания событий в Google Calendar необходимо авторизоваться через Google.\n\n" +
+                    "📎 Перейдите по ссылке для авторизации:\n" +
+                    authUrl + "\n\n" +
+                    "После авторизации вы сможете создавать напоминания в Google Calendar.",
                     createKeyboardJson());
             return;
         }
@@ -904,10 +916,16 @@ public class VkWebhookController {
 
         // Проверяем Google-авторизацию
         if (!googleCalendarService.hasValidAuth(user.getId())) {
+            // Формируем URL для авторизации
+            String authUrl = String.format("%s://%s/oauth/google/authorize?vkUserId=%d", 
+                    serverProtocol, serverHost, userId);
+            
             vkClient.sendMessage(userId,
-                    "❌ Google-авторизация отсутствует или недействительна.\n\n" +
-                    "Для создания событий в Google Calendar необходимо пройти авторизацию через Google OAuth.\n\n" +
-                    "Свяжитесь с администратором: " + ADMIN_CONTACT + FOOTER_INFO,
+                    "🔐 Требуется авторизация Google\n\n" +
+                    "Для создания событий в Google Calendar необходимо авторизоваться через Google.\n\n" +
+                    "📎 Перейдите по ссылке для авторизации:\n" +
+                    authUrl + "\n\n" +
+                    "После авторизации попробуйте создать событие снова.",
                     createKeyboardJson());
             vkUserStates.put(userId, STATE_IDLE);
             return ResponseEntity.ok("ok");
@@ -953,4 +971,5 @@ public class VkWebhookController {
 
         return ResponseEntity.ok("ok");
     }
+
 }

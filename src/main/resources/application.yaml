@@ -41,4 +41,7 @@ app:
     google:
       client-id: ${APP__VALUES__GOOGLE__CLIENT__ID:}
       client-secret: ${APP__VALUES__GOOGLE__CLIENT__SECRET:}
+      redirect-uri: ${APP__VALUES__GOOGLE__REDIRECT__URI:https://derendyaev.ru/oauth/google/callback}
+      server-host: ${APP__VALUES__GOOGLE__SERVER__HOST:derendyaev.ru}
+      server-protocol: ${APP__VALUES__GOOGLE__SERVER__PROTOCOL:https}
 
