@@ -14,6 +14,7 @@ import org.springframework.web.util.UriComponentsBuilder;
 import ru.derendyaev.SmsGatewayLLM.model.UserEntity;
 import ru.derendyaev.SmsGatewayLLM.service.GoogleCalendarService;
 import ru.derendyaev.SmsGatewayLLM.service.UserService;
+import ru.derendyaev.SmsGatewayLLM.vk.VkClient;
 
 import java.util.Map;
 import java.util.Optional;
@@ -30,6 +31,7 @@ public class GoogleOAuthController {
 
     private final GoogleCalendarService googleCalendarService;
     private final UserService userService;
+    private final VkClient vkClient;
 
     @Value("${app.values.google.client-id:}")
     private String clientId;
@@ -201,6 +203,24 @@ public class GoogleOAuthController {
 
             log.info("Токены успешно сохранены для пользователя VK {}", vkUserId);
 
+            // Отправляем сообщение пользователю в VK
+            try {
+                String welcomeMessage = "🎉 Авторизация Google Calendar завершена!\n\n" +
+                        "Теперь вы можете создавать напоминания через текстовые и голосовые сообщения.\n\n" +
+                        "📝 Примеры команд:\n" +
+                        "• \"Встреча с командой завтра в 10:00\"\n" +
+                        "• \"Напоминание через 2 часа\"\n" +
+                        "• \"Забрать документы в обед\"\n\n" +
+                        "🎤 Также поддерживаются голосовые сообщения!\n\n" +
+                        "Бот готов к работе! 🤖";
+
+                vkClient.sendMessage(vkUserId, welcomeMessage + "\n\n" + "Свяжитесь с админом: admin@derendyaev.ru", createKeyboardJson());
+                log.info("Отправлено приветственное сообщение пользователю VK {} после авторизации", vkUserId);
+            } catch (Exception e) {
+                log.error("Ошибка при отправке приветственного сообщения пользователю VK {}: {}", vkUserId, e.getMessage());
+                // Не прерываем процесс, просто логируем ошибку
+            }
+
             model.addAttribute("success", true);
             model.addAttribute("message", "Авторизация Google успешно завершена! Теперь вы можете создавать напоминания в Google Calendar.");
             return "oauth-result";
@@ -211,6 +231,14 @@ public class GoogleOAuthController {
             model.addAttribute("message", "Ошибка при обработке авторизации: " + e.getMessage());
             return "oauth-result";
         }
+    }
+
+    /**
+     * Создает JSON-строку с клавиатурой VK для кнопки "Создать напоминание".
+     */
+    private String createKeyboardJson() {
+        // Формат клавиатуры VK API v5.199
+        return "{\"one_time\":false,\"buttons\":[[{\"action\":{\"type\":\"text\",\"label\":\"📅 Создать напоминание\",\"payload\":\"{\\\"button\\\":\\\"create_event_button\\\"}\"},\"color\":\"primary\"}]]}";
     }
 }
 

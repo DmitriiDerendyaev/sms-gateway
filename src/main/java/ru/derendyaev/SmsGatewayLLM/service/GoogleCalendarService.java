@@ -21,6 +21,7 @@ import ru.derendyaev.SmsGatewayLLM.model.GoogleAuthentificationEntity;
 import ru.derendyaev.SmsGatewayLLM.model.UserEntity;
 import ru.derendyaev.SmsGatewayLLM.repository.CalendarEventRepository;
 import ru.derendyaev.SmsGatewayLLM.repository.GoogleAuthentificationRepository;
+import ru.derendyaev.SmsGatewayLLM.service.UserService;
 
 import java.io.IOException;
 import java.time.Instant;
@@ -43,6 +44,7 @@ public class GoogleCalendarService {
 
     private final GoogleAuthentificationRepository googleAuthRepository;
     private final CalendarEventRepository calendarEventRepository;
+    private final UserService userService;
     private final Gson gson = new Gson();
 
     @Value("${app.values.google.client-id:}")
@@ -309,6 +311,19 @@ public class GoogleCalendarService {
             String googleEventId = createdEvent.getId();
             log.info("Событие успешно создано в Google Calendar: {}", googleEventId);
 
+            // Получаем timezone пользователя для отображения
+            Integer userTimezoneOffset = userService.getTimezoneOffset(user);
+
+            // Извлекаем время начала и окончания из созданного события
+            String startTimeStr = formatEventTime(createdEvent.getStart(), userTimezoneOffset);
+            String endTimeStr = formatEventTime(createdEvent.getEnd(), userTimezoneOffset);
+
+            // Если время не удалось отформатировать, используем fallback из оригинального JSON
+            if ("Не указано".equals(startTimeStr) || "Не указано".equals(endTimeStr)) {
+                startTimeStr = extractTimeFromOriginalJson(eventData, "start", userTimezoneOffset);
+                endTimeStr = extractTimeFromOriginalJson(eventData, "end", userTimezoneOffset);
+            }
+
             // Сохраняем событие в БД
             CalendarEventEntity calendarEvent = CalendarEventEntity.builder()
                     .userId(user.getId())
@@ -316,14 +331,18 @@ public class GoogleCalendarService {
                     .summary(event.getSummary())
                     .description(event.getDescription())
                     .startTime(LocalDateTime.ofInstant(
-                            Instant.ofEpochMilli(event.getStart().getDateTime().getValue()),
-                            ZoneId.of(event.getStart().getTimeZone() != null ? event.getStart().getTimeZone() : "UTC")
+                            Instant.ofEpochMilli(createdEvent.getStart().getDateTime() != null ?
+                                    createdEvent.getStart().getDateTime().getValue() :
+                                    createdEvent.getStart().getDate().getValue()),
+                            ZoneId.of(createdEvent.getStart().getTimeZone() != null ? createdEvent.getStart().getTimeZone() : "UTC")
                     ))
                     .endTime(LocalDateTime.ofInstant(
-                            Instant.ofEpochMilli(event.getEnd().getDateTime().getValue()),
-                            ZoneId.of(event.getEnd().getTimeZone() != null ? event.getEnd().getTimeZone() : "UTC")
+                            Instant.ofEpochMilli(createdEvent.getEnd().getDateTime() != null ?
+                                    createdEvent.getEnd().getDateTime().getValue() :
+                                    createdEvent.getEnd().getDate().getValue()),
+                            ZoneId.of(createdEvent.getEnd().getTimeZone() != null ? createdEvent.getEnd().getTimeZone() : "UTC")
                     ))
-                    .timezone(event.getStart().getTimeZone() != null ? event.getStart().getTimeZone() : "UTC")
+                    .timezone(createdEvent.getStart().getTimeZone() != null ? createdEvent.getStart().getTimeZone() : "UTC")
                     .attendees(eventData.has("attendees") ? eventData.get("attendees").toString() : null)
                     .reminders(eventData.has("reminders") ? eventData.get("reminders").toString() : null)
                     .build();
@@ -332,9 +351,9 @@ public class GoogleCalendarService {
             log.info("Событие сохранено в БД: {}", calendarEvent.getId());
 
             return "✅ Событие успешно создано в Google Calendar!\n\n" +
-                   "📅 Название: " + (event.getSummary() != null ? event.getSummary() : "Без названия") + "\n" +
-                   "🕐 Время: " + formatEventTime(event.getStart()) + "\n" +
-                   "🔗 ID события: " + googleEventId;
+                   "📅 " + (event.getSummary() != null ? event.getSummary() : "Без названия") + "\n" +
+                   "🕐 " + startTimeStr + (startTimeStr.equals(endTimeStr) ? "" : " - " + endTimeStr) + "\n" +
+                   "🔗 ID: " + googleEventId;
 
         } catch (IOException e) {
             log.error("Ошибка при создании события в Google Calendar: {}", e.getMessage(), e);
@@ -348,16 +367,38 @@ public class GoogleCalendarService {
     /**
      * Форматирует время события для отображения пользователю.
      */
-    private String formatEventTime(EventDateTime eventDateTime) {
-        if (eventDateTime == null || eventDateTime.getDateTime() == null) {
+    private String formatEventTime(EventDateTime eventDateTime, Integer userTimezoneOffset) {
+        if (eventDateTime == null) {
             return "Не указано";
         }
+
         try {
-            Instant instant = Instant.ofEpochMilli(eventDateTime.getDateTime().getValue());
-            ZonedDateTime zonedDateTime = ZonedDateTime.ofInstant(instant, ZoneId.of("UTC"));
-            return zonedDateTime.format(DateTimeFormatter.ofPattern("dd.MM.yyyy HH:mm UTC"));
+            ZoneId displayZoneId = getDisplayZoneId(userTimezoneOffset);
+
+            // Если есть dateTime (точное время)
+            if (eventDateTime.getDateTime() != null) {
+                com.google.api.client.util.DateTime dateTime = eventDateTime.getDateTime();
+                Instant instant = Instant.ofEpochMilli(dateTime.getValue());
+                ZonedDateTime zonedDateTime = ZonedDateTime.ofInstant(instant, displayZoneId);
+
+                // Форматируем в человекочитаемый вид
+                return zonedDateTime.format(DateTimeFormatter.ofPattern("dd.MM.yyyy в HH:mm")) +
+                       " " + getTimezoneDisplay(userTimezoneOffset);
+            }
+            // Если есть только date (весь день)
+            else if (eventDateTime.getDate() != null) {
+                com.google.api.client.util.DateTime date = eventDateTime.getDate();
+                Instant instant = Instant.ofEpochMilli(date.getValue());
+                ZonedDateTime zonedDateTime = ZonedDateTime.ofInstant(instant, displayZoneId);
+
+                return zonedDateTime.format(DateTimeFormatter.ofPattern("dd.MM.yyyy (весь день)"));
+            }
+            else {
+                return "Не указано";
+            }
         } catch (Exception e) {
-            return "Ошибка форматирования";
+            log.warn("Не удалось отформатировать время события: {}", e.getMessage());
+            return "Не указано";
         }
     }
 
@@ -391,6 +432,61 @@ public class GoogleCalendarService {
         
         googleAuthRepository.save(auth);
         log.info("Google-авторизация сохранена для пользователя {}", userId);
+    }
+
+    /**
+     * Извлекает время из оригинального JSON для fallback отображения
+     */
+    private String extractTimeFromOriginalJson(JsonObject eventData, String fieldName, Integer userTimezoneOffset) {
+        try {
+            if (eventData.has(fieldName)) {
+                JsonObject timeObj = eventData.getAsJsonObject(fieldName);
+                if (timeObj.has("dateTime")) {
+                    String dateTimeStr = timeObj.get("dateTime").getAsString();
+                    // Парсим время из строки вида "2025-12-15T13:00:00"
+                    if (dateTimeStr.length() >= 16) {
+                        String date = dateTimeStr.substring(0, 10);
+                        String time = dateTimeStr.substring(11, 16);
+                        // Преобразуем в формат dd.MM.yyyy в HH:mm с timezone
+                        String[] dateParts = date.split("-");
+                        return String.format("%s.%s.%s в %s %s",
+                                           dateParts[2], dateParts[1], dateParts[0], time,
+                                           getTimezoneDisplay(userTimezoneOffset));
+                    }
+                }
+            }
+        } catch (Exception e) {
+            log.debug("Не удалось извлечь время из JSON: {}", e.getMessage());
+        }
+        return "Не указано";
+    }
+
+    /**
+     * Получает ZoneId для отображения времени пользователя
+     */
+    private ZoneId getDisplayZoneId(Integer timezoneOffset) {
+        if (timezoneOffset == null) {
+            return ZoneId.of("UTC");
+        }
+
+        // Создаем ZoneId с нужным смещением от UTC
+        return ZoneId.ofOffset("UTC", java.time.ZoneOffset.ofHours(timezoneOffset));
+    }
+
+    /**
+     * Получает строковое представление часового пояса для отображения
+     */
+    private String getTimezoneDisplay(Integer timezoneOffset) {
+        if (timezoneOffset == null) {
+            return "UTC";
+        }
+
+        if (timezoneOffset == 0) {
+            return "UTC";
+        }
+
+        String sign = timezoneOffset > 0 ? "+" : "";
+        return "UTC" + sign + timezoneOffset;
     }
 }
 
