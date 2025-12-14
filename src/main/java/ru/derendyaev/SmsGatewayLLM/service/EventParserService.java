@@ -246,12 +246,21 @@ public class EventParserService {
                 jsonObject.add("attendees", new com.google.gson.JsonArray());
             }
 
-            if (!jsonObject.has("reminders")) {
-                JsonObject reminders = new JsonObject();
-                reminders.addProperty("useDefault", false);
-                reminders.add("overrides", new com.google.gson.JsonArray());
-                jsonObject.add("reminders", reminders);
-            }
+            // Всегда добавляем напоминание за 15 минут до события
+            JsonObject reminders = new JsonObject();
+            reminders.addProperty("useDefault", false);
+
+            // Создаем массив с напоминанием за 15 минут
+            com.google.gson.JsonArray overrides = new com.google.gson.JsonArray();
+            JsonObject reminder15min = new JsonObject();
+            reminder15min.addProperty("method", "popup");
+            reminder15min.addProperty("minutes", 15);
+            overrides.add(reminder15min);
+
+            reminders.add("overrides", overrides);
+            jsonObject.add("reminders", reminders);
+
+            log.info("Добавлено напоминание за 15 минут до события");
 
             String finalJson = gson.toJson(jsonObject);
             log.info("Финальный JSON для Google Calendar: {}", finalJson);
