@@ -341,4 +341,46 @@ public class UserService {
         return null; // Не удалось распарсить
     }
 
+    /**
+     * Возвращает название часового пояса по смещению от UTC
+     * Используется для передачи в GigaChat
+     */
+    public String getTimezoneName(Integer timezoneOffset) {
+        if (timezoneOffset == null) {
+            return "UTC";
+        }
+
+        // Маппинг наиболее распространенных timezone
+        return switch (timezoneOffset) {
+            case -12 -> "Pacific/Pago_Pago";     // UTC-12
+            case -11 -> "Pacific/Midway";        // UTC-11
+            case -10 -> "Pacific/Honolulu";      // UTC-10
+            case -9 -> "America/Anchorage";      // UTC-9
+            case -8 -> "America/Los_Angeles";    // UTC-8
+            case -7 -> "America/Denver";         // UTC-7
+            case -6 -> "America/Chicago";        // UTC-6
+            case -5 -> "America/New_York";       // UTC-5
+            case -4 -> "America/Halifax";        // UTC-4
+            case -3 -> "America/Sao_Paulo";      // UTC-3
+            case -2 -> "Atlantic/South_Georgia"; // UTC-2
+            case -1 -> "Atlantic/Azores";        // UTC-1
+            case 0 -> "UTC";                     // UTC+0
+            case 1 -> "Europe/London";           // UTC+1
+            case 2 -> "Europe/Berlin";           // UTC+2
+            case 3 -> "Europe/Moscow";           // UTC+3
+            case 4 -> "Asia/Dubai";              // UTC+4
+            case 5 -> "Asia/Karachi";            // UTC+5
+            case 6 -> "Asia/Dhaka";              // UTC+6
+            case 7 -> "Asia/Bangkok";            // UTC+7
+            case 8 -> "Asia/Shanghai";           // UTC+8
+            case 9 -> "Asia/Tokyo";              // UTC+9
+            case 10 -> "Australia/Sydney";       // UTC+10
+            case 11 -> "Pacific/Noumea";         // UTC+11
+            case 12 -> "Pacific/Fiji";           // UTC+12
+            case 13 -> "Pacific/Tongatapu";      // UTC+13
+            case 14 -> "Pacific/Kiritimati";     // UTC+14
+            default -> "UTC"; // Fallback
+        };
+    }
+
 }

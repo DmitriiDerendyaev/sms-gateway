@@ -790,27 +790,45 @@ public class VkWebhookController {
         String audioUserPrompt;
 
         if (STATE_CREATING_EVENT.equals(state)) {
-            // Специальный промпт для создания событий календаря с текущим временем
-            audioSystemPrompt = "Ты - помощник для создания событий в Google Calendar. " +
-                    "Пользователь отправил голосовое сообщение с описанием события. " +
-                    "Твоя задача - РАСПОЗНАТЬ текст из голосового сообщения и вернуть ТОЛЬКО описание события в текстовом формате, " +
-                    "подходящем для создания напоминания в календаре.\n\n" +
-                    "КРИТИЧЕСКИ ВАЖНО - ТЕКУЩЕЕ ВРЕМЯ" + timezoneNote + ":\n" +
-                    "Сейчас: " + currentDateTime + "\n" +
-                    "Сегодня: " + currentDate + ", время: " + currentTime + timezoneNote.replace(" (", "").replace(")", "") + "\n\n" +
-                    "ПРАВИЛА:\n" +
-                    "- Верни ТОЛЬКО текст описания события\n" +
-                    "- Не добавляй лишние комментарии или вопросы\n" +
-                    "- Не пытайся создать JSON или структурировать данные\n" +
-                    "- Просто верни то, что пользователь сказал голосом\n" +
-                    "- Учитывай, что относительное время ('через 1 час', 'завтра') рассчитывается от ТЕКУЩЕГО момента\n\n" +
-                    "ПРИМЕРЫ:\n" +
-                    "Пользователь говорит: \"Создать напоминание через 1 час\"\n" +
-                    "Ты отвечаешь: \"Создать напоминание через 1 час\"\n\n" +
-                    "Пользователь говорит: \"Встреча с командой завтра в 10 часов\"\n" +
-                    "Ты отвечаешь: \"Встреча с командой завтра в 10 часов\"";
+            // Специальный промпт для создания событий календаря - GigaChat сам определяет время
+            String timezoneName = userService.getTimezoneName(timezoneOffset);
 
-            audioUserPrompt = "Распознай текст голосового сообщения и верни только описание события для календаря. Текущее время: " + currentDateTime;
+            audioSystemPrompt = "Ты — помощник для создания событий в Google Calendar.\n\n" +
+                    "Пользователь отправил голосовое сообщение с описанием события.\n" +
+                    "Твоя задача:\n" +
+                    "1. Распознать текст\n" +
+                    "2. Самостоятельно определить ТОЧНУЮ дату и время события\n" +
+                    "3. Вернуть JSON, максимально близкий к формату Google Calendar\n\n" +
+                    "ТЕКУЩИЙ КОНТЕКСТ:\n" +
+                    "- Текущее локальное время пользователя: " + currentDateTime + "\n" +
+                    "- Часовой пояс пользователя: " + timezoneName + "\n\n" +
+                    "ПРАВИЛА:\n" +
+                    "- Ты ОБЯЗАН самостоятельно интерпретировать выражения времени:\n" +
+                    "  (\"завтра\", \"в обед\", \"вечером\", \"через 2 часа\" и т.д.)\n" +
+                    "- Используй локальное время пользователя\n" +
+                    "- Если время указано не точно (\"в обед\", \"вечером\"):\n" +
+                    "  - обед = 13:00\n" +
+                    "  - вечер = 19:00\n" +
+                    "- Если длительность не указана — ставь 1 час\n\n" +
+                    "ФОРМАТ ОТВЕТА (ТОЛЬКО JSON):\n" +
+                    "{\n" +
+                    "  \"summary\": \"Название события\",\n" +
+                    "  \"description\": \"\",\n" +
+                    "  \"start\": {\n" +
+                    "    \"dateTime\": \"YYYY-MM-DDTHH:mm:ss\",\n" +
+                    "    \"timeZone\": \"" + timezoneName + "\"\n" +
+                    "  },\n" +
+                    "  \"end\": {\n" +
+                    "    \"dateTime\": \"YYYY-MM-DDTHH:mm:ss\",\n" +
+                    "    \"timeZone\": \"" + timezoneName + "\"\n" +
+                    "  }\n" +
+                    "}\n\n" +
+                    "ЗАПРЕЩЕНО:\n" +
+                    "- markdown\n" +
+                    "- комментарии\n" +
+                    "- текст вне JSON";
+
+            audioUserPrompt = "Распознай текст голосового сообщения и верни JSON для создания события в календаре.";
         } else {
             // Обычный промпт для общего общения
             audioSystemPrompt = "Внимательно слушай, анализируй ситуацию, соблюдай законы, отвечай четко и грамотно";
@@ -881,21 +899,40 @@ public class VkWebhookController {
         String userState = vkUserStates.get(userId);
 
         if (STATE_CREATING_EVENT.equals(userState)) {
-            // Специальная обработка для режима создания событий
-            String transcribedText = response.getChoices().get(0).getMessage().getContent().trim();
-            log.info("Голосовое сообщение транскрибировано в состоянии CREATING_EVENT: {}", transcribedText);
+            // Специальная обработка для режима создания событий - GigaChat возвращает JSON напрямую
+            String jsonResponse = response.getChoices().get(0).getMessage().getContent().trim();
+            log.info("Получен JSON от GigaChat для голосового сообщения: {}", jsonResponse);
 
             // Очищаем от возможных markdown-форматирований
-            transcribedText = transcribedText.replaceAll("```", "").trim();
+            jsonResponse = jsonResponse.replaceAll("```json", "").replaceAll("```", "").trim();
 
-            // НЕ списываем токены здесь - они спишутся в handleEventCreation при парсинге
-            // Возвращаем токены назад, так как это промежуточный шаг
-            user.setTokens(balance); // Возвращаем баланс к исходному
-            userService.saveUser(user);
-            log.info("Токены возвращены пользователю {} (промежуточный шаг создания события)", userId);
+            try {
+                // Валидируем и конвертируем JSON в формат для Google Calendar
+                String validatedJson = eventParserService.validateAndConvertJsonForVoice(jsonResponse, timezoneOffset);
 
-            // Передаем распознанный текст на создание события
-            handleEventCreation(userId, transcribedText, externalMessageId);
+                if (validatedJson != null) {
+                    // Создаем событие напрямую, без дополнительного парсинга
+                    String result = googleCalendarService.createEvent(userOpt.get(), validatedJson);
+                    vkClient.sendMessage(userId, result + FOOTER_INFO, createKeyboardJson());
+
+                    // Возвращаем пользователя в состояние IDLE
+                    vkUserStates.put(userId, STATE_IDLE);
+                    log.info("Событие из голосового сообщения успешно создано для пользователя {}", userId);
+                } else {
+                    log.error("Не удалось валидировать JSON от GigaChat для пользователя {}", userId);
+                    vkClient.sendMessage(userId,
+                            "❌ Не удалось обработать голосовое сообщение. Попробуйте отправить текстом." + FOOTER_INFO,
+                            createKeyboardJson());
+                    vkUserStates.put(userId, STATE_IDLE);
+                }
+
+            } catch (Exception e) {
+                log.error("Ошибка при обработке JSON от GigaChat для пользователя {}: {}", userId, e.getMessage());
+                vkClient.sendMessage(userId,
+                        "❌ Ошибка при создании события: " + e.getMessage() + FOOTER_INFO,
+                        createKeyboardJson());
+                vkUserStates.put(userId, STATE_IDLE);
+            }
         } else {
             // Обычная обработка голосового сообщения
             String responseText = response.toString() +
