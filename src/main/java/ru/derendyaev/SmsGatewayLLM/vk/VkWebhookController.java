@@ -145,7 +145,14 @@ public class VkWebhookController {
                         deduplicationService.registerMessage(audioMessageText, userIdStr, externalMessageId);
                         
                         try {
-                            handleAudioMessage(userId, peerId, attachment, externalMessageId);
+                            // Проверяем состояние пользователя
+                            String currentState = vkUserStates.get(userId);
+                            if (STATE_CREATING_EVENT.equals(currentState)) {
+                                log.info("Обработка голосового сообщения в состоянии CREATING_EVENT для пользователя {}", userId);
+                                handleAudioMessage(userId, peerId, attachment, externalMessageId);
+                            } else {
+                                handleAudioMessage(userId, peerId, attachment, externalMessageId);
+                            }
                         } catch (Exception e) {
                             log.error("Ошибка при обработке голосового сообщения от пользователя {}: {}", userId, e.getMessage(), e);
                             vkClient.sendMessage(userId, "❌ Ошибка при обработке голосового сообщения. Попробуйте еще раз." + FOOTER_INFO);
@@ -726,15 +733,40 @@ public class VkWebhookController {
         List<String> attachments = new ArrayList<>();
         attachments.add(fileId);
 
-        // Системный промпт для работы с аудио (оптимизирован для экономии токенов)
-        // Сокращенная версия: убраны повторы и лишние слова, сохранен смысл
-        String audioSystemPrompt = "Внимательно слушай, анализируй ситуацию, соблюдай законы, отвечай четко и грамотно";
+        // Определяем промпт в зависимости от состояния пользователя
+        String state = vkUserStates.get(userId);
+        String audioSystemPrompt;
+        String audioUserPrompt;
+
+        if (STATE_CREATING_EVENT.equals(state)) {
+            // Специальный промпт для создания событий календаря
+            audioSystemPrompt = "Ты - помощник для создания событий в Google Calendar. " +
+                    "Пользователь отправил голосовое сообщение с описанием события. " +
+                    "Твоя задача - РАСПОЗНАТЬ текст из голосового сообщения и вернуть ТОЛЬКО описание события в текстовом формате, " +
+                    "подходящем для создания напоминания в календаре.\n\n" +
+                    "ПРАВИЛА:\n" +
+                    "- Верни ТОЛЬКО текст описания события\n" +
+                    "- Не добавляй лишние комментарии или вопросы\n" +
+                    "- Не пытайся создать JSON или структурировать данные\n" +
+                    "- Просто верни то, что пользователь сказал голосом\n\n" +
+                    "ПРИМЕРЫ:\n" +
+                    "Пользователь говорит: \"Создать напоминание на завтра в 10 часов\"\n" +
+                    "Ты отвечаешь: \"Создать напоминание на завтра в 10 часов\"\n\n" +
+                    "Пользователь говорит: \"Встреча с командой через 2 часа\"\n" +
+                    "Ты отвечаешь: \"Встреча с командой через 2 часа\"";
+
+            audioUserPrompt = "Распознай текст голосового сообщения и верни только описание события для календаря.";
+        } else {
+            // Обычный промпт для общего общения
+            audioSystemPrompt = "Внимательно слушай, анализируй ситуацию, соблюдай законы, отвечай четко и грамотно";
+            audioUserPrompt = "Распознай текст, Помоги пользователю в решении его задачи. Не переспрашивай пользователя, пытайся ответить сам";
+        }
+
         Message systemMessage = new Message("system", audioSystemPrompt);
-        
-        Message userMessage = new Message("user", "Распознай текст, Помоги пользователю в решении его задачи. Не переспрашивай пользователя, пытайся ответить сам", attachments);
+        Message userMessageObj = new Message("user", audioUserPrompt, attachments);
         List<Message> messages = new ArrayList<>();
         messages.add(systemMessage);
-        messages.add(userMessage);
+        messages.add(userMessageObj);
 
         int maxTokens = Math.min(balance, 512);
         log.info("Отправка запроса на расшифровку в GigaChat для пользователя {} (баланс: {}, max_tokens: {})", 
@@ -790,22 +822,33 @@ public class VkWebhookController {
         userService.saveUser(user);
         log.info("Списано токенов: {}, было: {}, остаток: {}", used, balance, newBalance);
 
-        // --- Формируем и отправляем ответ ---
-        String responseText = response.toString() + 
-                "\n\n💰 Потрачено токенов: " + used + 
-                "\n📊 Остаток токенов: " + newBalance +
-                FOOTER_INFO;
+        // Проверяем состояние пользователя ДО обработки ответа
+        String userState = vkUserStates.get(userId);
 
-        log.info("Отправка ответа пользователю {}", userId);
-        
-        // Проверяем, находится ли пользователь в состоянии создания события
-        String state = vkUserStates.get(userId);
-        if (STATE_CREATING_EVENT.equals(state)) {
-            // Если пользователь создаёт событие, обрабатываем транскрибированный текст
-            String transcribedText = response.toString();
+        if (STATE_CREATING_EVENT.equals(userState)) {
+            // Специальная обработка для режима создания событий
+            String transcribedText = response.getChoices().get(0).getMessage().getContent().trim();
             log.info("Голосовое сообщение транскрибировано в состоянии CREATING_EVENT: {}", transcribedText);
+
+            // Очищаем от возможных markdown-форматирований
+            transcribedText = transcribedText.replaceAll("```", "").trim();
+
+            // НЕ списываем токены здесь - они спишутся в handleEventCreation при парсинге
+            // Возвращаем токены назад, так как это промежуточный шаг
+            user.setTokens(balance); // Возвращаем баланс к исходному
+            userService.saveUser(user);
+            log.info("Токены возвращены пользователю {} (промежуточный шаг создания события)", userId);
+
+            // Передаем распознанный текст на создание события
             handleEventCreation(userId, transcribedText, externalMessageId);
         } else {
+            // Обычная обработка голосового сообщения
+            String responseText = response.toString() +
+                    "\n\n💰 Потрачено токенов: " + used +
+                    "\n📊 Остаток токенов: " + newBalance +
+                    FOOTER_INFO;
+
+            log.info("Отправка ответа пользователю {}", userId);
             vkClient.sendMessage(userId, responseText);
         }
     }
@@ -872,21 +915,23 @@ public class VkWebhookController {
 
     /**
      * Обрабатывает создание события из текста пользователя.
-     * 
+     *
      * @param userId ID пользователя VK
      * @param userText Текст с описанием события
-     * @param externalMessageId ID сообщения для дедупликации
+     * @param externalMessageId ID сообщения для дедупликации (может быть null для голосовых)
      * @return ResponseEntity
      */
     private ResponseEntity<String> handleEventCreation(Integer userId, String userText, String externalMessageId) {
         log.info("Обработка создания события для пользователя {}: {}", userId, userText);
-        
-        // Дедупликация
-        if (deduplicationService.isDuplicate(userText, String.valueOf(userId), externalMessageId)) {
+
+        // Дедупликация (только если есть externalMessageId - для текстовых сообщений)
+        if (externalMessageId != null && deduplicationService.isDuplicate(userText, String.valueOf(userId), externalMessageId)) {
             log.debug("Сообщение от пользователя {} является дубликатом, пропускаем", userId);
             return ResponseEntity.ok("ok");
         }
-        deduplicationService.registerMessage(userText, String.valueOf(userId), externalMessageId);
+        if (externalMessageId != null) {
+            deduplicationService.registerMessage(userText, String.valueOf(userId), externalMessageId);
+        }
         
         // Проверяем регистрацию пользователя
         Optional<UserEntity> userOpt = userService.getByVkId(userId);
@@ -948,7 +993,19 @@ public class VkWebhookController {
             }
 
             log.info("Текст успешно распарсен в JSON: {}", eventJson);
-            
+
+            // Списание токенов за парсинг текста в JSON (для голосовых сообщений)
+            // Для текстовых сообщений токены спишутся в основном обработчике
+            int tokensAfterParsing = user.getTokens();
+            if (externalMessageId == null) { // Это голосовое сообщение
+                // Списываем токены за парсинг (дополнительно к уже списанным за транскрибирование)
+                int parsingTokensUsed = 1; // Примерное значение, можно улучшить
+                tokensAfterParsing = Math.max(user.getTokens() - parsingTokensUsed, 0);
+                user.setTokens(tokensAfterParsing);
+                userService.saveUser(user);
+                log.info("Дополнительно списано токенов за парсинг: {}, итоговый баланс: {}", parsingTokensUsed, tokensAfterParsing);
+            }
+
             // Создаём событие в Google Calendar
             String result = googleCalendarService.createEvent(user, eventJson);
             
