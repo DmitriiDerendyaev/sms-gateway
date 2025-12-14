@@ -12,6 +12,8 @@ import ru.derendyaev.SmsGatewayLLM.gigaChat.models.message.GigaMessageRequest;
 import ru.derendyaev.SmsGatewayLLM.gigaChat.models.message.GigaMessageResponse;
 import ru.derendyaev.SmsGatewayLLM.model.UserEntity;
 import ru.derendyaev.SmsGatewayLLM.restUtils.GigaChatClient;
+import ru.derendyaev.SmsGatewayLLM.service.EventParserService;
+import ru.derendyaev.SmsGatewayLLM.service.GoogleCalendarService;
 import ru.derendyaev.SmsGatewayLLM.service.MessageDeduplicationService;
 import ru.derendyaev.SmsGatewayLLM.service.PaymentService;
 import ru.derendyaev.SmsGatewayLLM.service.SmsService;
@@ -40,6 +42,8 @@ public class VkWebhookController {
     private final UserService userService;
     private final MessageDeduplicationService deduplicationService;
     private final PaymentService paymentService;
+    private final EventParserService eventParserService;
+    private final GoogleCalendarService googleCalendarService;
 
     @Value("${app.values.vk.group-id}")
     private String groupId;
@@ -49,8 +53,20 @@ public class VkWebhookController {
 
     private final VkClient vkClient; // создадим ниже
 
-    // Хранение состояний пользователей VK (ожидание номера телефона)
+    // Хранение состояний пользователей VK
+    // Возможные состояния:
+    // - WAITING_PHONE - ожидание номера телефона
+    // - CREATING_EVENT - создание события в Google Calendar
+    // - IDLE - пользователь не создаёт событие (по умолчанию)
     private final Map<Integer, String> vkUserStates = new ConcurrentHashMap<>();
+    
+    // Константы состояний
+    private static final String STATE_IDLE = "IDLE";
+    private static final String STATE_WAITING_PHONE = "WAITING_PHONE";
+    private static final String STATE_CREATING_EVENT = "CREATING_EVENT";
+    
+    // Константы для кнопок
+    private static final String BUTTON_CREATE_EVENT = "create_event_button";
 
     // Префикс /llm больше не обязателен - все сообщения обрабатываются
     // private static final String LLM_PREFIX = "/llm";
@@ -161,11 +177,25 @@ public class VkWebhookController {
             String userMessage = text.trim();
             log.debug("Обработанное сообщение: '{}' (длина: {})", userMessage, userMessage.length());
 
+            // --- Обработка кнопок (payload) ---
+            @SuppressWarnings("unchecked")
+            Map<String, Object> payloadObj = (Map<String, Object>) message.get("payload");
+            if (payloadObj != null) {
+                String payload = payloadObj.toString();
+                log.info("Получен payload от пользователя {}: {}", userId, payload);
+                
+                if (payload.contains(BUTTON_CREATE_EVENT)) {
+                    log.info("Пользователь {} нажал кнопку создания события", userId);
+                    handleCreateEventButton(userId);
+                    return ResponseEntity.ok("ok");
+                }
+            }
+
             // --- Обработка команды /start (ПЕРЕД дедупликацией, чтобы команда всегда обрабатывалась) ---
             if ("/start".equalsIgnoreCase(userMessage) || "Начать".equalsIgnoreCase(userMessage)) {
                 log.info("Получена команда /start от пользователя {}", userId);
-                vkUserStates.put(userId, "WAITING_PHONE");
-                vkClient.sendMessage(userId, WELCOME_MESSAGE + FOOTER_INFO);
+                vkUserStates.put(userId, STATE_WAITING_PHONE);
+                vkClient.sendMessage(userId, WELCOME_MESSAGE + FOOTER_INFO, createKeyboardJson());
                 // Не регистрируем команду в дедупликации, чтобы её можно было использовать повторно
                 return ResponseEntity.ok("ok");
             }
@@ -228,21 +258,25 @@ public class VkWebhookController {
                 return ResponseEntity.ok("ok");
             }
 
-            // --- Обработка состояния ожидания телефона (тоже ПЕРЕД дедупликацией) ---
+            // --- Обработка состояний пользователя (ПЕРЕД дедупликацией) ---
             if (vkUserStates.containsKey(userId)) {
                 String state = vkUserStates.get(userId);
-                if ("WAITING_PHONE".equals(state)) {
+                
+                if (STATE_WAITING_PHONE.equals(state)) {
                     log.info("Пользователь {} в состоянии WAITING_PHONE, обрабатываем номер телефона", userId);
                     // Получаем username из сообщения (если доступно) или используем VK User ID
                     String username = null; // VK API не передаёт username напрямую в webhook
                     
                     // Регистрируем пользователя с телефоном
                     String result = userService.registerVkUserWithPhone(userId, username, userMessage);
-                    vkClient.sendMessage(userId, result + FOOTER_INFO);
-                    vkUserStates.remove(userId);
+                    vkClient.sendMessage(userId, result + FOOTER_INFO, createKeyboardJson());
+                    vkUserStates.put(userId, STATE_IDLE);
                     log.info("Пользователь {} зарегистрирован с телефоном", userId);
                     // Не регистрируем в дедупликации, так как это одноразовое действие
                     return ResponseEntity.ok("ok");
+                } else if (STATE_CREATING_EVENT.equals(state)) {
+                    log.info("Пользователь {} в состоянии CREATING_EVENT, обрабатываем описание события", userId);
+                    return handleEventCreation(userId, userMessage, externalMessageId);
                 }
             }
 
@@ -694,6 +728,166 @@ public class VkWebhookController {
                 FOOTER_INFO;
 
         log.info("Отправка ответа пользователю {}", userId);
-        vkClient.sendMessage(userId, responseText);
+        
+        // Проверяем, находится ли пользователь в состоянии создания события
+        String state = vkUserStates.get(userId);
+        if (STATE_CREATING_EVENT.equals(state)) {
+            // Если пользователь создаёт событие, обрабатываем транскрибированный текст
+            String transcribedText = response.toString();
+            log.info("Голосовое сообщение транскрибировано в состоянии CREATING_EVENT: {}", transcribedText);
+            handleEventCreation(userId, transcribedText, externalMessageId);
+        } else {
+            vkClient.sendMessage(userId, responseText);
+        }
+    }
+
+    /**
+     * Создаёт JSON-строку с клавиатурой VK для кнопки "Создать напоминание".
+     * 
+     * @return JSON-строка с клавиатурой
+     */
+    private String createKeyboardJson() {
+        // Формат клавиатуры VK API v5.199
+        return "{\"one_time\":false,\"buttons\":[[{\"action\":{\"type\":\"text\",\"label\":\"📅 Создать напоминание\",\"payload\":\"{\\\"button\\\":\\\"" + BUTTON_CREATE_EVENT + "\\\"}\"},\"color\":\"primary\"}]]}";
+    }
+
+    /**
+     * Обрабатывает нажатие кнопки "Создать напоминание".
+     * 
+     * @param userId ID пользователя VK
+     */
+    private void handleCreateEventButton(Integer userId) {
+        log.info("Обработка нажатия кнопки создания события для пользователя {}", userId);
+        
+        // Проверяем регистрацию пользователя
+        Optional<UserEntity> userOpt = userService.getByVkId(userId);
+        if (userOpt.isEmpty()) {
+            vkClient.sendMessage(userId,
+                    "❌ Вы не зарегистрированы.\n\n" +
+                    "Для регистрации отправьте команду /start и следуйте инструкциям." + FOOTER_INFO,
+                    createKeyboardJson());
+            return;
+        }
+
+        UserEntity user = userOpt.get();
+        
+        // Проверяем Google-авторизацию
+        if (!googleCalendarService.hasValidAuth(user.getId())) {
+            vkClient.sendMessage(userId,
+                    "❌ Google-авторизация отсутствует или недействительна.\n\n" +
+                    "Для создания событий в Google Calendar необходимо пройти авторизацию через Google OAuth.\n\n" +
+                    "Свяжитесь с администратором: " + ADMIN_CONTACT + FOOTER_INFO,
+                    createKeyboardJson());
+            return;
+        }
+
+        // Переводим пользователя в состояние создания события
+        vkUserStates.put(userId, STATE_CREATING_EVENT);
+        
+        String message = "📅 Создание напоминания\n\n" +
+                "Опишите событие, которое вы хотите создать в Google Calendar.\n\n" +
+                "Примеры:\n" +
+                "• Встреча с командой завтра в 10:00\n" +
+                "• Собеседование 25 декабря в 15:30\n" +
+                "• Позвонить маме через 2 часа\n\n" +
+                "Вы можете отправить текст или голосовое сообщение.";
+        
+        vkClient.sendMessage(userId, message + FOOTER_INFO, createKeyboardJson());
+    }
+
+    /**
+     * Обрабатывает создание события из текста пользователя.
+     * 
+     * @param userId ID пользователя VK
+     * @param userText Текст с описанием события
+     * @param externalMessageId ID сообщения для дедупликации
+     * @return ResponseEntity
+     */
+    private ResponseEntity<String> handleEventCreation(Integer userId, String userText, String externalMessageId) {
+        log.info("Обработка создания события для пользователя {}: {}", userId, userText);
+        
+        // Дедупликация
+        if (deduplicationService.isDuplicate(userText, String.valueOf(userId), externalMessageId)) {
+            log.debug("Сообщение от пользователя {} является дубликатом, пропускаем", userId);
+            return ResponseEntity.ok("ok");
+        }
+        deduplicationService.registerMessage(userText, String.valueOf(userId), externalMessageId);
+        
+        // Проверяем регистрацию пользователя
+        Optional<UserEntity> userOpt = userService.getByVkId(userId);
+        if (userOpt.isEmpty()) {
+            vkClient.sendMessage(userId,
+                    "❌ Вы не зарегистрированы.\n\n" +
+                    "Для регистрации отправьте команду /start и следуйте инструкциям." + FOOTER_INFO,
+                    createKeyboardJson());
+            vkUserStates.put(userId, STATE_IDLE);
+            return ResponseEntity.ok("ok");
+        }
+
+        UserEntity user = userOpt.get();
+        
+        // Проверяем баланс токенов
+        int balance = user.getTokens();
+        if (balance <= 0) {
+            vkClient.sendMessage(userId,
+                    "⚠️ Недостаточно токенов.\n\n" +
+                    "Ваш текущий баланс: " + balance + " токенов.\n" +
+                    "Пополните баланс для продолжения работы.\n\n" +
+                    "Свяжитесь с администратором: " + ADMIN_CONTACT + FOOTER_INFO,
+                    createKeyboardJson());
+            vkUserStates.put(userId, STATE_IDLE);
+            return ResponseEntity.ok("ok");
+        }
+
+        // Проверяем Google-авторизацию
+        if (!googleCalendarService.hasValidAuth(user.getId())) {
+            vkClient.sendMessage(userId,
+                    "❌ Google-авторизация отсутствует или недействительна.\n\n" +
+                    "Для создания событий в Google Calendar необходимо пройти авторизацию через Google OAuth.\n\n" +
+                    "Свяжитесь с администратором: " + ADMIN_CONTACT + FOOTER_INFO,
+                    createKeyboardJson());
+            vkUserStates.put(userId, STATE_IDLE);
+            return ResponseEntity.ok("ok");
+        }
+
+        try {
+            // Парсим текст в JSON для Google Calendar
+            log.info("Парсинг текста в JSON для события: {}", userText);
+            String eventJson = eventParserService.parseTextToEventJson(userText);
+            
+            if (eventJson == null) {
+                log.error("Не удалось распарсить текст в JSON для события");
+                vkClient.sendMessage(userId,
+                        "❌ Не удалось обработать описание события.\n\n" +
+                        "Попробуйте описать событие более подробно, указав дату и время.\n\n" +
+                        "Пример: \"Встреча с командой завтра в 10:00\"" + FOOTER_INFO,
+                        createKeyboardJson());
+                vkUserStates.put(userId, STATE_IDLE);
+                return ResponseEntity.ok("ok");
+            }
+
+            log.info("Текст успешно распарсен в JSON: {}", eventJson);
+            
+            // Создаём событие в Google Calendar
+            String result = googleCalendarService.createEvent(user, eventJson);
+            
+            // Отправляем результат пользователю
+            vkClient.sendMessage(userId, result + FOOTER_INFO, createKeyboardJson());
+            
+            // Возвращаем пользователя в состояние IDLE
+            vkUserStates.put(userId, STATE_IDLE);
+            
+            log.info("Событие успешно создано для пользователя {}", userId);
+            
+        } catch (Exception e) {
+            log.error("Ошибка при создании события для пользователя {}: {}", userId, e.getMessage(), e);
+            vkClient.sendMessage(userId,
+                    "❌ Ошибка при создании события: " + e.getMessage() + "\n\n" +
+                    "Попробуйте еще раз или свяжитесь с администратором: " + ADMIN_CONTACT + FOOTER_INFO,
+                    createKeyboardJson());
+            vkUserStates.put(userId, STATE_IDLE);
+        }
+
+        return ResponseEntity.ok("ok");
     }
 }

@@ -9,6 +9,7 @@ on:
       - feature/add-payment
       - feature/add-voice-recognition
       - feature/add-image-recognition
+      - feature/add-google-integration
 
 jobs:
   # =============================
@@ -68,9 +69,11 @@ jobs:
 
       - name: Deploy to VPS
         env:
-          SSH_USER: homic
-          SSH_HOST: 91.146.28.240
-          SSH_PASSWORD: 360317wifi
+          SSH_USER: ${{ secrets.SSH_USER }}
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_PASSWORD: ${{ secrets.SSH_PASSWORD }}
+          GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
+          GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
         run: |
           sudo apt-get update && sudo apt-get install -y sshpass
 
@@ -85,9 +88,9 @@ jobs:
           sshpass -p "$SSH_PASSWORD" scp -o StrictHostKeyChecking=no ./deploy/SmsGatewayLLM-0.0.1-SNAPSHOT.jar $SSH_USER@$SSH_HOST:/home/$SSH_USER/deploy/sms-gateway-llm/github-actions/app.jar
           sshpass -p "$SSH_PASSWORD" scp -o StrictHostKeyChecking=no Dockerfile $SSH_USER@$SSH_HOST:/home/$SSH_USER/deploy/sms-gateway-llm/github-actions/Dockerfile
 
-          sshpass -p "$SSH_PASSWORD" ssh -o StrictHostKeyChecking=no $SSH_USER@$SSH_HOST << 'EOF'
+          sshpass -p "$SSH_PASSWORD" ssh -o StrictHostKeyChecking=no $SSH_USER@$SSH_HOST << EOF
             set -e
-            cd /home/homic/deploy/sms-gateway-llm/github-actions
+            cd /home/$SSH_USER/deploy/sms-gateway-llm/github-actions
             ls -la
 
             docker stop sms-gateway-llm || true
@@ -96,5 +99,8 @@ jobs:
             docker network create app-network || true
 
             docker build -t sms-gateway-llm:latest .
-            docker run -d --name sms-gateway-llm --network app-network -p 8041:8041 sms-gateway-llm:latest
+            docker run -d --name sms-gateway-llm --network app-network -p 8041:8041 \
+              -e APP__VALUES__GOOGLE__CLIENT__ID="$GOOGLE_CLIENT_ID" \
+              -e APP__VALUES__GOOGLE__CLIENT__SECRET="$GOOGLE_CLIENT_SECRET" \
+              sms-gateway-llm:latest
           EOF

@@ -40,9 +40,21 @@ public class VkClient {
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     public void sendMessage(Integer userId, String text) {
+        sendMessage(userId, text, null);
+    }
+
+    /**
+     * Отправляет сообщение с опциональной клавиатурой.
+     * 
+     * @param userId ID пользователя
+     * @param text Текст сообщения
+     * @param keyboardJson JSON-строка с клавиатурой (null, если клавиатура не нужна)
+     */
+    public void sendMessage(Integer userId, String text, String keyboardJson) {
         String responseBody = null;
         try {
-            log.info("Отправка сообщения в ВК: userId={}, textLength={}", userId, text != null ? text.length() : 0);
+            log.info("Отправка сообщения в ВК: userId={}, textLength={}, hasKeyboard={}", 
+                    userId, text != null ? text.length() : 0, keyboardJson != null);
             
             RestTemplate rest = new RestTemplate();
             MultiValueMap<String, String> params = new LinkedMultiValueMap<>();
@@ -60,6 +72,12 @@ public class VkClient {
             params.add("random_id", String.valueOf(randomId));
             
             params.add("message", text);
+            
+            // Добавляем клавиатуру, если она указана
+            if (keyboardJson != null && !keyboardJson.isEmpty()) {
+                params.add("keyboard", keyboardJson);
+            }
+            
             params.add("access_token", token);
             params.add("v", API_VERSION);
 
