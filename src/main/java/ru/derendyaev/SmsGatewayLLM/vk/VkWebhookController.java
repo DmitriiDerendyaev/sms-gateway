@@ -86,7 +86,7 @@ public class VkWebhookController {
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     // Префикс /llm больше не обязателен - все сообщения обрабатываются
-    // private static final String LLM_PREFIX = "/llm";
+    // private static final String LLM_PREFIX = "/llm"; Нужно ли еще
     private static final String ADMIN_CONTACT = "https://t.me/dmitrii_derendyaev";
     
     // Информация для всех сообщений
