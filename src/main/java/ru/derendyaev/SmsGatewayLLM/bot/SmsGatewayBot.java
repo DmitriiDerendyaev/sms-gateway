@@ -31,10 +31,14 @@ public class SmsGatewayBot extends TelegramLongPollingBot {
     private String botToken;
 
     @PostConstruct
-    public void register() throws Exception {
-        TelegramBotsApi api = new TelegramBotsApi(DefaultBotSession.class);
-        api.registerBot(this);
-        log.info("✅ Telegram Bot '{}' успешно запущен", botUsername);
+    public void register() {
+        try {
+            TelegramBotsApi api = new TelegramBotsApi(DefaultBotSession.class);
+            api.registerBot(this);
+            log.info("✅ Telegram Bot '{}' успешно запущен", botUsername);
+        } catch (Exception e) {
+            log.error("❌ Telegram недоступен. Бот не запущен, но приложение работает", e);
+        }
     }
 
     @Override
